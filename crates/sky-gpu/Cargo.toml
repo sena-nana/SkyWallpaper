@@ -1,0 +1,12 @@
+[package]
+name = "sky-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "WGSL physical sky renderer for SkyWallpaper"
+
+[dependencies]
+bytemuck.workspace = true
+sky-core.workspace = true
+wgpu.workspace = true

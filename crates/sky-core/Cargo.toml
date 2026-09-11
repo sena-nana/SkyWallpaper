@@ -1,0 +1,13 @@
+[package]
+name = "sky-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Local-time sky, sun, moon, and weather-parameter mapping"
+
+[dependencies]
+chrono.workspace = true
+
+[dev-dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }

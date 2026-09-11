@@ -1,0 +1,28 @@
+[package]
+name = "skywallpaper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows live wallpaper: physical sky and weather"
+
+[[bin]]
+name = "skywallpaper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+nana-ui = { path = "../../../NanaUI/crates/nana-ui", features = ["hosted", "bundled-fonts", "controls"] }
+nana-ui-platform = { path = "../../../NanaUI/crates/nana-ui-platform" }
+pollster.workspace = true
+serde.workspace = true
+sky-core.workspace = true
+sky-gpu.workspace = true
+toml.workspace = true
+tray-icon = "0.21"
+wallpaper-host.workspace = true
+weather.workspace = true
+wgpu.workspace = true
+windows.workspace = true
+winit.workspace = true

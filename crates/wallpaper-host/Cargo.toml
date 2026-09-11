@@ -1,0 +1,16 @@
+[package]
+name = "wallpaper-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows WorkerW live-wallpaper host"
+
+[dependencies]
+pollster.workspace = true
+raw-window-handle.workspace = true
+sky-core.workspace = true
+sky-gpu.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+windows.workspace = true
