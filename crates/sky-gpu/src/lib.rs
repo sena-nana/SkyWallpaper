@@ -7,24 +7,23 @@
 
 use sky_core::{PrecipKind, SkyView};
 
+const UNIFORM_SIZE: usize = 64;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SkyUniforms {
     pub sun_dir: [f32; 3],
     pub time: f32,
-    pub moon_dir: [f32; 3],
-    pub moon_phase: f32,
     pub resolution: [f32; 2],
     pub cloud_cover: f32,
     pub precip: f32,
     pub precip_kind: f32,
     pub fog: f32,
     pub thunder: f32,
-    pub latitude: f32,
-    pub sidereal: f32,
     pub cam_pitch: f32,
     pub cam_yaw: f32,
     pub exposure: f32,
+    pub _pad: [f32; 2],
 }
 
 impl SkyUniforms {
@@ -38,8 +37,6 @@ impl SkyUniforms {
         Self {
             sun_dir: view.sun.dir_enu,
             time,
-            moon_dir: view.moon.dir_enu,
-            moon_phase: view.moon.illumination as f32,
             resolution: [width as f32, height as f32],
             cloud_cover: view.weather.cloud_cover,
             precip: view.weather.precip,
@@ -49,14 +46,15 @@ impl SkyUniforms {
             },
             fog: view.weather.fog,
             thunder: thunder_flash.clamp(0.0, 1.0),
-            latitude: view.latitude_deg as f32,
-            sidereal: view.sidereal_deg as f32,
             cam_pitch: view.cam_pitch_deg,
             cam_yaw: view.cam_yaw_deg,
             exposure: view.exposure,
+            _pad: [0.0; 2],
         }
     }
 }
+
+const _: () = assert!(std::mem::size_of::<SkyUniforms>() == UNIFORM_SIZE);
 
 pub struct SkyRenderer {
     pipeline: wgpu::RenderPipeline,

@@ -25,7 +25,7 @@ cargo run -p skywallpaper -- --preview --weather rain --lat 39.9 --lon 116.4
 
 ## 行为
 
-- 天色只跟本机本地时钟，按经纬度算太阳/月亮
+- 天色只跟本机本地时钟，按经纬度算太阳高度驱动物理大气（不画太阳/月亮圆盘）
 - 启动时用 IP 粗定位，设置里可搜索城市覆盖
 - Open-Meteo 失败时回退晴天模拟，昼夜仍正确
 - 插电约 30 FPS，电池约 15 FPS，全屏游戏时暂停
@@ -36,7 +36,7 @@ cargo run -p skywallpaper -- --preview --weather rain --lat 39.9 --lon 116.4
 
 ## 天空模型
 
-大气底色采用 Sébastien Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*（2020）的介质系数与单次散射，实现源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW)（MIT），并由 [dnlzro/horizon](https://github.com/dnlzro/horizon) 的 `src/gradient.ts` 整理。本仓库把它搬进 2D WGSL（太阳仍走三维方位），不是网页那条 CSS 线性渐变。
+大气底色采用 Sébastien Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*（2020）的介质系数与单次散射，实现源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW)（MIT），并由 [dnlzro/horizon](https://github.com/dnlzro/horizon) 的 `src/gradient.ts` 整理。本仓库把它搬进 2D WGSL（太阳方向只作散射光源，不画日盘），天气用色调与轻量雨雪雾电叠加。不是网页那条 CSS 线性渐变。
 
 ## 许可
 

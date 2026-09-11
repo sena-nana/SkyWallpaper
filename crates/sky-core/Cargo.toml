@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Local-time sky, sun, moon, and weather-parameter mapping"
+description = "Local-time sky, sun position, and weather-parameter mapping"
 
 [dependencies]
 chrono.workspace = true

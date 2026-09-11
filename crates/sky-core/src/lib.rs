@@ -1,10 +1,8 @@
 //! Sky state from observer location and UTC time.
 
-mod moon;
 mod sun;
 mod weather_map;
 
-pub use moon::MoonState;
 pub use sun::SunState;
 pub use weather_map::{PrecipKind, SkyWeather, WeatherCode};
 
@@ -78,8 +76,6 @@ fn tand(deg: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct SkyView {
     pub sun: SunState,
-    pub moon: MoonState,
-    pub sidereal_deg: f64,
     pub latitude_deg: f64,
     pub longitude_deg: f64,
     pub weather: SkyWeather,
@@ -95,17 +91,7 @@ impl SkyView {
         utc: DateTime<Utc>,
         weather: SkyWeather,
     ) -> Self {
-        let jd = julian_date(utc);
-        let lst = local_sidereal_deg(jd, longitude_deg);
         let sun = SunState::at(latitude_deg, longitude_deg, utc);
-        let moon = MoonState::at(latitude_deg, longitude_deg, utc);
-        let night = ((-sun.altitude_deg - 2.0) / 10.0).clamp(0.0, 1.0) as f32;
-        let yaw = if night > 0.55 {
-            moon.azimuth_deg as f32
-        } else {
-            sun.azimuth_deg as f32
-        };
-        let pitch = 18.0;
         let mut exposure = 1.0;
         if sun.altitude_deg < -6.0 {
             exposure = 1.35;
@@ -117,13 +103,11 @@ impl SkyView {
         }
         Self {
             sun,
-            moon,
-            sidereal_deg: lst,
             latitude_deg,
             longitude_deg,
             weather,
-            cam_pitch_deg: pitch,
-            cam_yaw_deg: yaw,
+            cam_pitch_deg: 18.0,
+            cam_yaw_deg: sun.azimuth_deg as f32,
             exposure,
         }
     }
@@ -174,20 +158,6 @@ mod tests {
         let t = Utc.with_ymd_and_hms(2024, 6, 21, 16, 0, 0).unwrap();
         let sun = SunState::at(BEIJING.0, BEIJING.1, t);
         assert!(sun.altitude_deg < -10.0, "alt {}", sun.altitude_deg);
-    }
-
-    #[test]
-    fn full_moon_near_june_22_2024() {
-        let t = Utc.with_ymd_and_hms(2024, 6, 22, 1, 8, 0).unwrap();
-        let moon = MoonState::at(0.0, 0.0, t);
-        assert!(moon.illumination > 0.95, "illum {}", moon.illumination);
-    }
-
-    #[test]
-    fn new_moon_near_june_6_2024() {
-        let t = Utc.with_ymd_and_hms(2024, 6, 6, 12, 38, 0).unwrap();
-        let moon = MoonState::at(0.0, 0.0, t);
-        assert!(moon.illumination < 0.08, "illum {}", moon.illumination);
     }
 
     #[test]

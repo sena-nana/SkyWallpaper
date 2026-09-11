@@ -1,19 +1,17 @@
 struct Uniforms {
     sun_dir: vec3<f32>,
     time: f32,
-    moon_dir: vec3<f32>,
-    moon_phase: f32,
     resolution: vec2<f32>,
     cloud_cover: f32,
     precip: f32,
     precip_kind: f32,
     fog: f32,
     thunder: f32,
-    latitude: f32,
-    sidereal: f32,
     cam_pitch: f32,
     cam_yaw: f32,
     exposure: f32,
+    _pad0: f32,
+    _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -205,60 +203,29 @@ fn look_dir(uv: vec2<f32>) -> vec3<f32> {
     return normalize(forward + right * px + up * py);
 }
 
-fn sun_disc(rd: vec3<f32>, sun: vec3<f32>) -> f32 {
-    let d = dot(rd, normalize(sun));
-    let core = smoothstep(0.9994, 0.99985, d);
-    let halo = smoothstep(0.996, 0.9994, d);
-    return core * 18.0 + halo * 2.5;
-}
-
-fn moon_disc(rd: vec3<f32>, moon: vec3<f32>, sun: vec3<f32>, phase: f32) -> vec3<f32> {
-    if (moon.y < -0.02) {
-        return vec3<f32>(0.0);
-    }
-    let m = normalize(moon);
-    let d = dot(rd, m);
-    let disc = smoothstep(0.9992, 0.99955, d);
-    if (disc <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let q = normalize(rd - m * d);
-    let terminator = normalize(sun - m * dot(sun, m));
-    let lit = smoothstep(-0.15, 0.35, dot(q, terminator) + (phase * 2.0 - 1.0));
-    let color = mix(vec3<f32>(0.08, 0.09, 0.12), vec3<f32>(0.92, 0.9, 0.82), lit * phase);
-    return color * disc * (0.4 + phase * 0.9);
-}
-
 fn stars(rd: vec3<f32>, night: f32) -> vec3<f32> {
     if (night <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let rot = u.sidereal * PI / 180.0;
-    let c = cos(rot);
-    let s = sin(rot);
-    let p = vec3<f32>(rd.x * c - rd.z * s, rd.y, rd.x * s + rd.z * c);
-    let n = floor(p * 180.0);
+    let n = floor(rd * 140.0);
     let h = hash21(n.xy + n.z * 17.0);
-    let spark = smoothstep(0.992, 1.0, h);
-    let twinkle = 0.65 + 0.35 * sin(u.time * (2.0 + h * 4.0) + h * 20.0);
-    return vec3<f32>(spark * twinkle * night * 1.4);
+    let spark = smoothstep(0.9972, 1.0, h);
+    let twinkle = 0.7 + 0.3 * sin(u.time * (1.5 + h * 3.0) + h * 20.0);
+    return vec3<f32>(spark * twinkle * night);
 }
 
-fn milky_way(rd: vec3<f32>, night: f32, moon_light: f32) -> vec3<f32> {
-    if (night <= 0.05) {
-        return vec3<f32>(0.0);
-    }
-    let rot = (u.sidereal + 32.0) * PI / 180.0;
-    let c = cos(rot);
-    let s = sin(rot);
-    let p = vec3<f32>(rd.x * c - rd.z * s, rd.y, rd.x * s + rd.z * c);
-    // Tilted galactic plane.
-    let axis = normalize(vec3<f32>(0.18, 0.42, 0.89));
-    let band = exp(-pow(dot(p, axis) * 6.5, 2.0));
-    let dust = fbm(p.xz * 7.0 + p.y * 3.0);
-    let glow = band * (0.25 + 0.75 * dust);
-    let fade = night * (1.0 - moon_light * 0.65) * (1.0 - u.cloud_cover * 0.85);
-    return vec3<f32>(0.55, 0.62, 0.95) * glow * fade * 0.55;
+fn weather_grade(col: vec3<f32>, sun_y: f32) -> vec3<f32> {
+    let cover = clamp(u.cloud_cover, 0.0, 1.0);
+    let rain_amt = u.precip * (1.0 - u.precip_kind);
+    let snow_amt = u.precip * u.precip_kind;
+    let day = clamp(sun_y + 0.25, 0.0, 1.0);
+    let lum = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let overcast = vec3<f32>(0.42, 0.47, 0.54) * (0.35 + 0.65 * day) + vec3<f32>(lum * 0.15);
+    var out = mix(col, overcast, cover * 0.48);
+    out = mix(out, out * vec3<f32>(0.78, 0.84, 0.94), rain_amt * 0.4);
+    let snow_col = mix(out, vec3<f32>(0.82, 0.88, 0.94) * (0.45 + 0.55 * day), 0.4);
+    out = mix(out, snow_col, snow_amt * 0.45);
+    return out;
 }
 
 fn clouds(rd: vec3<f32>) -> f32 {
@@ -341,17 +308,13 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let sun = normalize(u.sun_dir);
-    let moon = normalize(u.moon_dir);
     var col = atmosphere(rd, sun);
     col *= HORIZON_EXPOSURE * u.exposure;
     col = sunset_bias(col);
+    col = weather_grade(col, sun.y);
 
     let night = smoothstep(0.15, -0.12, sun.y);
-    let moon_light = u.moon_phase * smoothstep(-0.05, 0.2, moon.y);
-    col += stars(rd, night * (1.0 - u.cloud_cover * 0.8));
-    col += milky_way(rd, night, moon_light);
-    col += moon_disc(rd, moon, sun, u.moon_phase) * (0.35 + night * 0.65);
-    col += vec3<f32>(1.0, 0.9, 0.65) * sun_disc(rd, sun) * step(0.0, sun.y + 0.02);
+    col += stars(rd, night * (1.0 - u.cloud_cover * 0.85));
 
     let cld = clouds(rd);
     let cloud_lit = mix(vec3<f32>(0.15, 0.17, 0.22), vec3<f32>(0.95, 0.93, 0.9), clamp(sun.y * 0.8 + 0.35, 0.0, 1.0));
