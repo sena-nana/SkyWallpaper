@@ -1,5 +1,8 @@
+use std::fs;
+use std::path::PathBuf;
+use std::process::Child;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use sky_core::{SkyView, SkyWeather};
 use sky_gpu::{SkyRenderer, SkyUniforms, pick_srgb_format};
@@ -8,10 +11,14 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::debug::DebugParams;
+
 pub struct PreviewOpts {
     pub latitude: f64,
     pub longitude: f64,
     pub weather: SkyWeather,
+    pub debug_path: Option<PathBuf>,
+    pub debug_panel: Option<Child>,
 }
 
 struct Gpu {
@@ -28,17 +35,30 @@ struct PreviewApp {
     gpu: Option<Gpu>,
     start: Instant,
     thunder: f32,
+    anim_hold: Option<f32>,
+    debug_cache: Option<DebugParams>,
+    debug_mtime: Option<SystemTime>,
+    debug_panel: Option<Child>,
 }
 
-pub fn run(opts: PreviewOpts) -> anyhow::Result<()> {
+pub fn run(mut opts: PreviewOpts) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
+    let debug_cache = opts
+        .debug_path
+        .as_ref()
+        .and_then(|path| DebugParams::load(path));
+    let debug_panel = opts.debug_panel.take();
     let app = PreviewApp {
         opts,
         window: None,
         gpu: None,
         start: Instant::now(),
         thunder: 0.0,
+        anim_hold: None,
+        debug_cache,
+        debug_mtime: None,
+        debug_panel,
     };
     event_loop.run_app(app)?;
     Ok(())
@@ -49,7 +69,12 @@ impl ApplicationHandler for PreviewApp {
         if self.window.is_some() {
             return;
         }
-        let attrs = WindowAttributes::default().with_title("SkyWallpaper Preview");
+        let title = if self.opts.debug_path.is_some() {
+            "SkyWallpaper Debug"
+        } else {
+            "SkyWallpaper Preview"
+        };
+        let attrs = WindowAttributes::default().with_title(title);
         let window: Arc<dyn Window> = match event_loop.create_window(attrs) {
             Ok(window) => Arc::from(window),
             Err(err) => {
@@ -70,9 +95,17 @@ impl ApplicationHandler for PreviewApp {
         }
     }
 
-    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.teardown_debug();
+                event_loop.exit();
+            }
             WindowEvent::SurfaceResized(size) => {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.config.width = size.width.max(1);
@@ -92,23 +125,66 @@ impl ApplicationHandler for PreviewApp {
     }
 }
 
+impl Drop for PreviewApp {
+    fn drop(&mut self) {
+        self.teardown_debug();
+    }
+}
+
 impl PreviewApp {
+    fn teardown_debug(&mut self) {
+        if let Some(mut child) = self.debug_panel.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(path) = self.opts.debug_path.take() {
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(path.with_extension("tmp"));
+        }
+    }
+
+    fn refresh_debug(&mut self) -> Option<DebugParams> {
+        let path = self.opts.debug_path.as_ref()?;
+        if let Ok(meta) = fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+            && self.debug_mtime != Some(mtime)
+        {
+            if let Some(params) = DebugParams::load(path) {
+                self.debug_cache = Some(params);
+            }
+            self.debug_mtime = Some(mtime);
+        }
+        self.debug_cache
+    }
+
     fn redraw(&mut self) {
+        let elapsed = self.start.elapsed().as_secs_f32();
+        let debug = self.refresh_debug();
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
-        if self.opts.weather.thunder && fastrand(self.start.elapsed().as_secs_f32()) < 0.008 {
-            self.thunder = 1.0;
-        }
-        self.thunder *= 0.82;
-        let view = SkyView::now(self.opts.latitude, self.opts.longitude, self.opts.weather);
-        let uniforms = SkyUniforms::from_view(
-            &view,
-            gpu.config.width,
-            gpu.config.height,
-            self.start.elapsed().as_secs_f32(),
-            self.thunder,
-        );
+        let (view, time, thunder) = if let Some(params) = debug {
+            let time = if params.anim_paused {
+                *self.anim_hold.get_or_insert(elapsed)
+            } else {
+                self.anim_hold = None;
+                elapsed
+            };
+            (params.build_view(), time, params.thunder.clamp(0.0, 1.0))
+        } else {
+            if self.opts.weather.thunder && fastrand(elapsed) < 0.008 {
+                self.thunder = 1.0;
+            }
+            self.thunder *= 0.82;
+            self.anim_hold = None;
+            (
+                SkyView::now(self.opts.latitude, self.opts.longitude, self.opts.weather),
+                elapsed,
+                self.thunder,
+            )
+        };
+        let uniforms =
+            SkyUniforms::from_view(&view, gpu.config.width, gpu.config.height, time, thunder);
         gpu.renderer.write_uniforms(&gpu.queue, &uniforms);
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -119,7 +195,9 @@ impl PreviewApp {
             }
             _ => return,
         };
-        let tex = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let tex = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

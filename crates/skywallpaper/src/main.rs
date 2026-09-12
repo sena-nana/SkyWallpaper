@@ -1,5 +1,6 @@
 mod autostart;
 mod config;
+mod debug;
 mod host;
 mod i18n;
 mod preview;
@@ -7,7 +8,7 @@ mod settings;
 mod state;
 mod tray;
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use sky_core::SkyWeather;
 use windows::Win32::Foundation::GetLastError;
@@ -30,8 +31,11 @@ fn main() {
 fn real_main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let preview = args.iter().any(|a| a == "--preview");
+    let debug_mode = args.iter().any(|a| a == "--debug");
+    let debug_panel = args.iter().any(|a| a == "--debug-panel");
     let weather = parse_weather(&args);
     let (lat, lon) = parse_lat_lon(&args);
+    let debug_params_path = parse_path_flag(&args, "--debug-params");
 
     let mut config = Config::load();
     if let Some(lat) = lat {
@@ -41,12 +45,30 @@ fn real_main() -> anyhow::Result<()> {
         config.longitude = lon;
     }
 
-    if preview {
+    if debug_panel {
         let weather = weather.unwrap_or_else(SkyWeather::clear_fallback);
+        let params = debug_params_path
+            .as_ref()
+            .and_then(|path| debug::DebugParams::load(path))
+            .unwrap_or_else(|| {
+                debug::DebugParams::from_live(config.latitude, config.longitude, weather)
+            });
+        return debug::run(Arc::new(Mutex::new(params)), debug_params_path);
+    }
+
+    if preview || debug_mode {
+        let weather = weather.unwrap_or_else(SkyWeather::clear_fallback);
+        let (debug_path, debug_panel) = if debug_mode {
+            spawn_debug_panel(config.latitude, config.longitude, weather)?
+        } else {
+            (None, None)
+        };
         return preview::run(PreviewOpts {
             latitude: config.latitude,
             longitude: config.longitude,
             weather,
+            debug_path,
+            debug_panel,
         });
     }
 
@@ -62,22 +84,40 @@ fn real_main() -> anyhow::Result<()> {
 }
 
 fn parse_weather(args: &[String]) -> Option<SkyWeather> {
-    let raw = args.windows(2).find_map(|pair| {
+    args.windows(2).find_map(|pair| {
         if pair[0] == "--weather" {
-            Some(pair[1].as_str())
+            Some(debug::weather_preset(&pair[1]))
         } else {
             None
         }
-    })?;
-    Some(match raw {
-        "clear" => SkyWeather::clear_fallback(),
-        "cloud" | "cloudy" => SkyWeather::from_wmo(3, 85.0, 0.0, 16_000.0),
-        "rain" => SkyWeather::from_wmo(63, 95.0, 4.0, 8_000.0),
-        "snow" => SkyWeather::from_wmo(73, 95.0, 2.0, 6_000.0),
-        "fog" => SkyWeather::from_wmo(45, 80.0, 0.0, 400.0),
-        "thunder" | "storm" => SkyWeather::from_wmo(95, 100.0, 5.0, 4_000.0),
-        _ => SkyWeather::clear_fallback(),
     })
+}
+
+fn parse_path_flag(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
+    args.windows(2).find_map(|pair| {
+        if pair[0] == flag {
+            Some(std::path::PathBuf::from(&pair[1]))
+        } else {
+            None
+        }
+    })
+}
+
+fn spawn_debug_panel(
+    latitude: f64,
+    longitude: f64,
+    weather: SkyWeather,
+) -> anyhow::Result<(Option<std::path::PathBuf>, Option<std::process::Child>)> {
+    let path = std::env::temp_dir().join(format!("skywallpaper-debug-{}.toml", std::process::id()));
+    let params = debug::DebugParams::from_live(latitude, longitude, weather);
+    params.save(&path)?;
+    let exe = std::env::current_exe()?;
+    let child = std::process::Command::new(exe)
+        .arg("--debug-panel")
+        .arg("--debug-params")
+        .arg(&path)
+        .spawn()?;
+    Ok((Some(path), Some(child)))
 }
 
 fn parse_lat_lon(args: &[String]) -> (Option<f64>, Option<f64>) {

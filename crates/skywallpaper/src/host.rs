@@ -1,13 +1,13 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use sky_core::{SkyView, SkyWeather};
 use wallpaper_host::{
-    foreground_is_fullscreen, on_battery, take_display_changed, target_fps, WallpaperEngine,
+    WallpaperEngine, foreground_is_fullscreen, on_battery, take_display_changed, target_fps,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
 };
 
 use crate::config::LocationMode;
@@ -26,6 +26,8 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                 latitude: cfg.latitude,
                 longitude: cfg.longitude,
                 weather: state.effective_weather(),
+                debug_path: None,
+                debug_panel: None,
             });
         }
     };

@@ -23,6 +23,14 @@ cargo run -p skywallpaper -- --preview --weather rain --lat 39.9 --lon 116.4
 
 `--weather`：`clear` / `cloud` / `rain` / `snow` / `fog` / `thunder`。
 
+调运行时天空参数（不写配置）：
+
+```bash
+cargo run -p skywallpaper -- --debug
+```
+
+预览窗 + 滑块面板。去掉分辨率后 12 个 uniform 可调；关掉预览即结束。
+
 ## 行为
 
 - 天色只跟本机本地时钟，按经纬度算太阳高度驱动物理大气（不画太阳/月亮圆盘）
