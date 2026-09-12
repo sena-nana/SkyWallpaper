@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use nana_ui::runtime::{
-    Activate, Button, Checkbox, Entity, FrameworkError, List, RangeChanged, RangeField, Text,
+    Activate, Button, Checkbox, Entity, FrameworkError, RangeChanged, RangeField, Text,
     ToggleChanged,
 };
 use nana_ui::{
@@ -296,14 +296,11 @@ struct DebugPanel {
 
 pub fn run(params: Arc<Mutex<DebugParams>>, persist: Option<PathBuf>) -> anyhow::Result<()> {
     *LAUNCH.lock().unwrap() = Some(Launch { params, persist });
-    let zh = Lang::resolve(LanguagePref::System) == Lang::Zh;
-    let title = if zh {
-        "天空壁纸 Debug"
-    } else {
-        "SkyWallpaper Debug"
-    };
+    let title = panel_title();
     let result = run_runtime::<RuntimeApplication<DebugPanel>>(
-        RuntimeWindowSettings::new(title).initial_size(480.0, 800.0),
+        RuntimeWindowSettings::new(title)
+            .initial_size(480.0, 800.0)
+            .minimum_size(360.0, 480.0),
     );
     *LAUNCH.lock().unwrap() = None;
     result.map_err(|err| anyhow::anyhow!("{err}"))
@@ -331,40 +328,24 @@ impl ApplicationState for DebugPanel {
     ) -> Result<(), Self::Error> {
         let zh = Lang::resolve(LanguagePref::System) == Lang::Zh;
         let p = *self.params.lock().unwrap();
-        let document = window.document.document();
-        let widgets = window.document.context_mut().build(document, |ui| {
-            ui.with("root", List::new(), |ui| {
+        self.widgets = Some(crate::shell::mount_app_shell(
+            window,
+            panel_title(),
+            |ui, _| {
                 let summary = ui.child("sum", Text::new(p.summary()));
                 let live = ui.child(
                     "live",
-                    Checkbox::new(
-                        if zh {
-                            "跟随当前时刻"
-                        } else {
-                            "Live clock"
-                        },
-                        p.live_clock,
-                    ),
+                    Checkbox::new(t(zh, "跟随当前时刻", "Live clock"), p.live_clock),
                 );
                 let pause = ui.child(
                     "pause",
-                    Checkbox::new(if zh { "暂停动画" } else { "Pause anim" }, p.anim_paused),
+                    Checkbox::new(t(zh, "暂停动画", "Pause anim"), p.anim_paused),
                 );
                 let override_sun = ui.child(
                     "osun",
-                    Checkbox::new(
-                        if zh {
-                            "手动太阳位置"
-                        } else {
-                            "Override sun"
-                        },
-                        p.override_sun,
-                    ),
+                    Checkbox::new(t(zh, "手动太阳位置", "Override sun"), p.override_sun),
                 );
-                let snow = ui.child(
-                    "snow",
-                    Checkbox::new(if zh { "雪" } else { "Snow" }, p.snow),
-                );
+                let snow = ui.child("snow", Checkbox::new(t(zh, "雪", "Snow"), p.snow));
 
                 let mut knobs: [Option<Entity<RangeField>>; 10] = [None; 10];
                 for (i, knob) in Knob::ALL.into_iter().enumerate() {
@@ -376,9 +357,9 @@ impl ApplicationState for DebugPanel {
                     knobs[i] = Some(field);
                 }
 
-                ui.with("presets", List::new(), |ui| {
+                ui.row(8.0, |ui| {
                     for (name, z, e) in PRESETS {
-                        let btn = ui.child(*name, Button::new(if zh { *z } else { *e }));
+                        let btn = ui.child(*name, Button::new(t(zh, z, e)));
                         ui.on(btn, move |_, _: &Activate, cx| {
                             cx.dispatch_program(Message::Preset(name));
                         });
@@ -386,7 +367,7 @@ impl ApplicationState for DebugPanel {
                 });
                 let reset = ui.child(
                     "reset",
-                    Button::new(if zh { "重置" } else { "Reset" }).kind(ButtonKind::Primary),
+                    Button::new(t(zh, "重置", "Reset")).kind(ButtonKind::Primary),
                 );
 
                 ui.on(live, move |_, event: &ToggleChanged, cx| {
@@ -413,9 +394,8 @@ impl ApplicationState for DebugPanel {
                     override_sun,
                     snow,
                 }
-            })
-        })?;
-        self.widgets = Some(widgets);
+            },
+        )?);
         Ok(())
     }
 
@@ -472,6 +452,18 @@ impl ApplicationState for DebugPanel {
         }
         RuntimeProgramUpdate::redraw(context.window_id())
     }
+}
+
+fn panel_title() -> &'static str {
+    if Lang::resolve(LanguagePref::System) == Lang::Zh {
+        "天空壁纸 Debug"
+    } else {
+        "SkyWallpaper Debug"
+    }
+}
+
+fn t(zh: bool, z: &'static str, e: &'static str) -> &'static str {
+    if zh { z } else { e }
 }
 
 fn slider(value: f32, min: f32, max: f32, step: f32, label: &str) -> RangeField {

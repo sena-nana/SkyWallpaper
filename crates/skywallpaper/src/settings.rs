@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
-    Activate, Button, Checkbox, Entity, FrameworkError, List, Text, TextChanged, TextInput,
+    Activate, AppTitleBar, Button, Checkbox, Entity, FrameworkError, Text, TextChanged, TextInput,
     ToggleChanged,
 };
 use nana_ui::{
@@ -32,7 +32,7 @@ enum Message {
 
 #[derive(Clone, Copy)]
 struct Widgets {
-    title: Entity<Text>,
+    title_bar: Entity<AppTitleBar>,
     location_label: Entity<Text>,
     query: Entity<TextInput>,
     search: Entity<Button>,
@@ -60,7 +60,9 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     *SETTINGS_STATE.lock().unwrap() = Some(state.clone());
     let title = state.text().settings;
     let result = run_runtime::<RuntimeApplication<Settings>>(
-        RuntimeWindowSettings::new(title).initial_size(480.0, 640.0),
+        RuntimeWindowSettings::new(title)
+            .initial_size(480.0, 640.0)
+            .minimum_size(360.0, 400.0),
     );
     *SETTINGS_STATE.lock().unwrap() = None;
     result.map_err(|err| anyhow::anyhow!("{err}"))
@@ -92,17 +94,23 @@ impl ApplicationState for Settings {
         let cfg = self.state.config.lock().unwrap().clone();
         let paused = self.state.is_paused();
         let status = self.state.status.lock().unwrap().clone();
-        let document = window.document.document();
-        let widgets = window.document.context_mut().build(document, |ui| {
-            ui.with("root", List::new(), |ui| {
-                let title = ui.child("title", Text::new(tx.settings));
+        self.widgets = Some(crate::shell::mount_app_shell(
+            window,
+            tx.settings,
+            |ui, title_bar| {
                 let location_label = ui.child("loc_l", Text::new(tx.location));
                 let query = ui.child(
                     "query",
-                    TextInput::new("").placeholder(tx.location).label(tx.location),
+                    TextInput::new("")
+                        .placeholder(tx.location)
+                        .label(tx.location),
                 );
-                let search = ui.child("search", Button::new(tx.search).kind(ButtonKind::Primary));
-                let ip = ui.child("ip", Button::new(tx.use_ip));
+                let (search, ip) = ui.row(8.0, |ui| {
+                    let search =
+                        ui.child("search", Button::new(tx.search).kind(ButtonKind::Primary));
+                    let ip = ui.child("ip", Button::new(tx.use_ip));
+                    (search, ip)
+                });
                 let place = ui.child(
                     "place",
                     Text::new(format!(
@@ -111,9 +119,12 @@ impl ApplicationState for Settings {
                     )),
                 );
                 let lang_label = ui.child("lang_l", Text::new(tx.language));
-                let lang_sys = ui.child("lang_sys", Button::new(tx.follow_system));
-                let lang_zh = ui.child("lang_zh", Button::new(tx.chinese));
-                let lang_en = ui.child("lang_en", Button::new(tx.english));
+                let (lang_sys, lang_zh, lang_en) = ui.row(8.0, |ui| {
+                    let lang_sys = ui.child("lang_sys", Button::new(tx.follow_system));
+                    let lang_zh = ui.child("lang_zh", Button::new(tx.chinese));
+                    let lang_en = ui.child("lang_en", Button::new(tx.english));
+                    (lang_sys, lang_zh, lang_en)
+                });
                 let autostart = ui.child("auto", Checkbox::new(tx.autostart, cfg.autostart));
                 let fullscreen = ui.child(
                     "fs",
@@ -166,7 +177,7 @@ impl ApplicationState for Settings {
                 });
 
                 Widgets {
-                    title,
+                    title_bar,
                     location_label,
                     query,
                     search,
@@ -183,9 +194,8 @@ impl ApplicationState for Settings {
                     status,
                     about,
                 }
-            })
-        })?;
-        self.widgets = Some(widgets);
+            },
+        )?);
         Ok(())
     }
 
@@ -261,7 +271,10 @@ impl Settings {
         let paused = self.state.is_paused();
         let status = self.state.status.lock().unwrap().clone();
         let cx = window.document.context_mut();
-        let _ = cx.update_component(w.title, |t, _| t.value = tx.settings.to_string());
+        let _ = cx.update_component(w.title_bar, |bar, _| {
+            bar.title = tx.settings.into();
+        });
+        let _ = cx.assemble_app_title_bar(w.title_bar);
         let _ = cx.update_component(w.location_label, |t, _| t.value = tx.location.to_string());
         let _ = cx.update_component(w.query, |input, _| {
             input.placeholder = tx.location.into();
@@ -269,10 +282,7 @@ impl Settings {
         let _ = cx.update_component(w.search, |b, _| b.label = tx.search.to_string());
         let _ = cx.update_component(w.ip, |b, _| b.label = tx.use_ip.to_string());
         let _ = cx.update_component(w.place, |t, _| {
-            t.value = format!(
-                "{}  ({:.2}, {:.2})",
-                cfg.label, cfg.latitude, cfg.longitude
-            );
+            t.value = format!("{}  ({:.2}, {:.2})", cfg.label, cfg.latitude, cfg.longitude);
         });
         let _ = cx.update_component(w.lang_label, |t, _| t.value = tx.language.to_string());
         let _ = cx.update_component(w.lang_sys, |b, _| b.label = tx.follow_system.to_string());

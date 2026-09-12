@@ -5,6 +5,7 @@ mod host;
 mod i18n;
 mod preview;
 mod settings;
+mod shell;
 mod state;
 mod tray;
 
