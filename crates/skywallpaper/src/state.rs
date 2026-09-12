@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use sky_core::SkyWeather;
 
 use crate::config::{Config, LanguagePref, LocationMode};
-use crate::i18n::{t, Lang, Text};
+use crate::i18n::{Lang, Text, t};
 
 pub struct AppState {
     pub config: Mutex<Config>,

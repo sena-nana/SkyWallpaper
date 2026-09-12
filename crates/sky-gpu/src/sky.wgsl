@@ -16,7 +16,6 @@ struct Uniforms {
 // as ported in dnlzro/horizon `src/gradient.ts` (MIT). Display stops mix in OKLab;
 // physical scattering is twilight Mie only.
 const PI: f32 = 3.141592653589793;
-const FOV_DEG: f32 = 75.0;
 const RAYLEIGH_SCATTER: vec3<f32> = vec3<f32>(5.802e-6, 13.558e-6, 33.1e-6);
 const MIE_SCATTER: f32 = 3.996e-6;
 const MIE_ABSORB: f32 = 4.44e-6;
@@ -28,27 +27,32 @@ const TOP_RADIUS: f32 = 6460e3;
 const HORIZON_EXPOSURE: f32 = 25.0;
 const SUNSET_BIAS_STRENGTH: f32 = 0.1;
 const MIE_G: f32 = 0.8;
-const VIEW_STEPS: i32 = 16;
-const T_STEPS: i32 = 12;
+const VIEW_STEPS: i32 = 8;
+const T_STEPS: i32 = 6;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
 
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
+fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     var p = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
         vec2<f32>(-1.0, 3.0),
     );
-    return vec4<f32>(p[vid], 0.0, 1.0);
-}
-
-fn hash21(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+    let pos = p[vid];
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = vec2<f32>(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);
+    return out;
 }
 
 fn noise2(p: vec2<f32>) -> f32 {
     let i = floor(p);
     let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     let a = hash21(i);
     let b = hash21(i + vec2<f32>(1.0, 0.0));
     let c = hash21(i + vec2<f32>(0.0, 1.0));
@@ -60,7 +64,7 @@ fn fbm(p: vec2<f32>) -> f32 {
     var v = 0.0;
     var a = 0.5;
     var x = p;
-    for (var i = 0; i < 5; i = i + 1) {
+    for (var i = 0; i < 3; i = i + 1) {
         v += a * noise2(x);
         x = x * 2.02;
         a *= 0.5;
@@ -178,12 +182,6 @@ fn sunset_bias(color: vec3<f32>) -> vec3<f32> {
     let gb = 1.0 - 0.5 * k * w;
     let bb = 1.0 + 1.0 * k * w;
     return max(color * vec3<f32>(rb, gb, bb), vec3<f32>(0.0));
-}
-
-// Horizon view ray: s=0 at the horizon (bottom), s=1 toward mid-sky (top).
-fn view_dir(s: f32) -> vec3<f32> {
-    let focal_z = 1.0 / tan(FOV_DEG * 0.5 * PI / 180.0);
-    return normalize(vec3<f32>(0.0, s, focal_z));
 }
 
 fn cbrt(x: f32) -> f32 {
@@ -343,38 +341,70 @@ fn weather_grade(col: vec3<f32>, look: vec3<f32>, stops: SkyStops, sun_y: f32) -
     let rain_amt = u.precip * (1.0 - u.precip_kind);
     let snow_amt = u.precip * u.precip_kind;
     let day = smoothstep(-0.12, 0.28, sun_y);
-    let overcast = mix_oklab(look, vec3<f32>(luma3(look)), 0.16)
-        * mix(vec3<f32>(0.90, 0.91, 0.96), vec3<f32>(0.88, 0.90, 0.94), day);
-    var out = mix(col, overcast, cover * 0.40);
+    let over_w = smoothstep(0.18, 0.92, cover);
+    let dim = mix(0.90, 0.76, day);
+    let overcast = mix_oklab(look, vec3<f32>(luma3(look)), 0.12) * dim;
+    var out = mix(col, overcast, over_w * 0.70);
     out = mix(out, out * vec3<f32>(0.82, 0.86, 0.94), rain_amt * 0.32);
     let snow_hi = tinted(look, stops, 0.14 + 0.36 * day);
     out = mix(out, mix(out, snow_hi, 0.36), snow_amt * 0.40);
     return out;
 }
 
-fn cloud_color(look: vec3<f32>, stops: SkyStops, sun_y: f32, rd_y: f32) -> vec3<f32> {
+fn cloud_color(look: vec3<f32>, stops: SkyStops, sun_y: f32, rd_y: f32, thick: f32) -> vec3<f32> {
     let day = smoothstep(-0.15, 0.28, sun_y);
-    let lit = mix_oklab(stops.horizon, vec3<f32>(1.0), 0.08 * day);
-    let shade = mix_oklab(stops.zenith, look, 0.4) * mix(0.78, 0.92, day);
-    var col = mix_oklab(shade, lit, 0.35 + 0.50 * day);
+    let cover = clamp(u.cloud_cover, 0.0, 1.0);
+    let lit = mix_oklab(stops.horizon, vec3<f32>(1.0), 0.06 * day);
+    let shade = mix_oklab(stops.zenith, look, 0.35) * mix(0.70, 0.88, day);
+    let lit_w = clamp(
+        mix(0.52, 0.22, cover) * (0.40 + 0.60 * day) + (thick - 0.5) * 0.32,
+        0.0,
+        1.0,
+    );
+    let under = smoothstep(0.08, 0.45, rd_y);
+    var col = mix_oklab(shade, lit, lit_w * (1.0 - under * 0.35));
     let glow = (1.0 - rd_y) * smoothstep(0.22, 0.0, sun_y) * smoothstep(-0.20, 0.04, sun_y);
-    col = mix_oklab(col, mix_oklab(stops.horizon, stops.mid, 0.35), glow * 0.55);
+    col = mix_oklab(col, mix_oklab(stops.horizon, stops.mid, 0.35), glow * (0.45 + 0.22 * (1.0 - cover)));
     return col;
 }
 
-fn clouds(uv: vec2<f32>) -> f32 {
-    let t = u.time * 0.012;
-    let y = max(uv.y, 0.08);
-    let p1 = vec2<f32>(uv.x * 2.0, 1.0 / y) * 0.35 + vec2<f32>(t, t * 0.35);
-    let p2 = vec2<f32>(uv.x * 2.0, 1.0 / y) * 0.9 + vec2<f32>(t * 1.4, -t * 0.2);
-    let n = fbm(p1) * 0.65 + fbm(p2) * 0.35;
+fn cloud_uv(uv: vec2<f32>, height_bias: f32) -> vec2<f32> {
+    let y = max(uv.y + height_bias, 0.0);
+    let persp = 1.0 / (y + 0.24);
+    return vec2<f32>((uv.x - 0.5) * persp * 1.20, y / (y + 0.24));
+}
+
+// x = density, y = thickness.
+fn clouds(uv: vec2<f32>) -> vec2<f32> {
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
-    let threshold = mix(0.72, 0.18, cover);
-    let fade = smoothstep(0.0, 0.08, uv.y);
-    return smoothstep(threshold, threshold + 0.28, n) * mix(0.15, 1.0, cover) * fade;
+    if (cover < 0.02) {
+        return vec2<f32>(0.0);
+    }
+    let t = u.time * 0.010;
+    let p0 = cloud_uv(uv, 0.0);
+    let warp = fbm(p0 * 0.45 + vec2<f32>(t * 0.18, 0.04)) - 0.5;
+    let w = vec2<f32>(warp * 0.38, warp * 0.06);
+    let n1 = fbm(p0 * 0.62 + w + vec2<f32>(t * 0.90, t * 0.22));
+    let n2 = fbm(cloud_uv(uv, 0.14) * 1.25 + w * 0.65 + vec2<f32>(t * 1.40, -t * 0.16));
+
+    let threshold = mix(0.64, 0.20, cover);
+    let softness = mix(0.22, 0.38, cover);
+    let d1 = smoothstep(threshold, threshold + softness, n1);
+    let d2 = smoothstep(threshold + 0.08, threshold + softness + 0.10, n2);
+    var dens = d1 * mix(0.55, 0.95, cover) + d2 * mix(0.20, 0.45, cover);
+    let sheet = smoothstep(0.55, 1.0, cover) * mix(0.15, 0.55, cover);
+    dens = clamp(max(dens, sheet * (0.65 + 0.35 * n1)), 0.0, 1.0);
+
+    let fade = mix(smoothstep(0.0, 0.06, uv.y), 1.0, smoothstep(0.6, 1.0, cover) * 0.35);
+    dens *= fade;
+    return vec2<f32>(dens, n1 * 0.62 + n2 * 0.38);
 }
 
 fn snow(uv: vec2<f32>) -> f32 {
+    let amt = u.precip * u.precip_kind;
+    if (amt <= 0.0) {
+        return 0.0;
+    }
     let t = u.time * 0.35;
     var acc = 0.0;
     for (var i = 0; i < 3; i = i + 1) {
@@ -386,30 +416,7 @@ fn snow(uv: vec2<f32>) -> f32 {
         let d = length(f - vec2<f32>(fract(h * 7.1), fract(h * 3.3)));
         acc += smoothstep(0.06, 0.0, d);
     }
-    return acc * u.precip * u.precip_kind;
-}
-
-fn lightning_bolt(uv: vec2<f32>) -> f32 {
-    if (u.thunder < 0.2) {
-        return 0.0;
-    }
-    let seed = fract(u.thunder * 7.13 + 0.17);
-    var x = 0.35 + seed * 0.3;
-    var y = 0.95;
-    var acc = 0.0;
-    for (var i = 0; i < 10; i = i + 1) {
-        let ny = y - 0.08;
-        let nx = x + (hash21(vec2<f32>(f32(i), seed * 20.0)) - 0.5) * 0.12;
-        let pa = vec2<f32>(x, y);
-        let pb = vec2<f32>(nx, ny);
-        let ba = pb - pa;
-        let h = clamp(dot(uv - pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
-        let d = length(uv - pa - ba * h);
-        acc += smoothstep(0.012, 0.0, d);
-        x = nx;
-        y = ny;
-    }
-    return acc * u.thunder;
+    return acc * amt;
 }
 
 fn aces(x: vec3<f32>) -> vec3<f32> {
@@ -422,27 +429,31 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
-    let uv = clip.xy / u.resolution;
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let uv = in.uv;
     let sky_uv = vec2<f32>(uv.x, 1.0 - uv.y);
     let rd = view_dir(sky_uv.y);
 
     let sun = normalize(u.sun_dir);
     let alt_deg = degrees(asin(clamp(sun.y, -1.0, 1.0)));
     let look = solar_look(alt_deg, u.season, rd.y);
-    let w_look = mix(1.0, 0.90, smoothstep(-8.0, 55.0, alt_deg));
     let stops = solar_stops(alt_deg, u.season);
 
-    var phys = atmosphere(rd, sun);
-    phys *= HORIZON_EXPOSURE;
-    phys = sunset_bias(phys);
-    phys = aces(phys);
-    phys = pow(max(phys, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
-
-    var col = mix(phys, look, w_look);
-    let mie_w = smoothstep(14.0, 2.0, abs(alt_deg))
-        * pow(1.0 - clamp(rd.y / 0.45, 0.0, 1.0), 1.35);
-    col = mix(col, mix(col, phys, 0.40), mie_w);
+    var col = look;
+    let phys_fade = 1.0 - smoothstep(14.0, 18.0, abs(alt_deg));
+    if (phys_fade > 0.0) {
+        var phys = atmosphere(rd, sun);
+        phys *= HORIZON_EXPOSURE;
+        phys = sunset_bias(phys);
+        phys = aces(phys);
+        phys = pow(max(phys, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+        let w_look = mix(1.0, 0.90, smoothstep(-8.0, 55.0, alt_deg));
+        col = mix(phys, look, w_look);
+        let mie_w = smoothstep(14.0, 2.0, abs(alt_deg))
+            * pow(1.0 - clamp(rd.y / 0.45, 0.0, 1.0), 1.35);
+        col = mix(col, mix(col, phys, 0.40), mie_w);
+        col = mix(look, col, phys_fade);
+    }
     col = weather_grade(col, look, stops, sun.y);
 
     let night = smoothstep(0.02, -0.22, sun.y);
@@ -450,21 +461,25 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
 
     let cld = clouds(sky_uv);
     let day = smoothstep(-0.15, 0.28, sun.y);
-    let cloud_col = cloud_color(look, stops, sun.y, rd.y);
-    col = mix(col, cloud_col, cld * 0.88);
-    col += cloud_col * cld * u.thunder * 1.8;
+    let cloud_col = cloud_color(look, stops, sun.y, rd.y, cld.y);
+    let cover = clamp(u.cloud_cover, 0.0, 1.0);
+    col = mix(col, cloud_col, cld.x * mix(0.80, 0.94, cover));
+    col += cloud_col * cld.x * u.thunder * 1.8;
 
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
-    col += vec3<f32>(0.85, 0.9, 1.0) * lightning_bolt(uv) * 2.4;
+    let rain = u.precip * (1.0 - u.precip_kind);
+    if (rain <= RAIN_OVERLAY_MIN) {
+        col += lightning_rgb(uv, u.thunder);
+    }
 
-    let fog_amt = u.fog * (1.0 - rd.y * 0.7);
+    let fog_amt = sky_fog_amt(uv, u.fog);
     let fog_col = mix(mix(look, stops.horizon, 0.4), vec3<f32>(luma3(look)), 0.16)
         * mix(0.92, 1.06, day);
     col = mix(col, fog_col, fog_amt);
 
     col += vec3<f32>(u.thunder * 0.12);
-    col += (hash21(clip.xy) - 0.5) * 0.004;
+    col += (hash21(in.pos.xy) - 0.5) * 0.004;
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(col, 1.0);
 }

@@ -1,5 +1,7 @@
 use windows::Win32::Foundation::RECT;
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
 };
@@ -15,7 +17,11 @@ pub fn foreground_is_fullscreen() -> bool {
         let class = String::from_utf16_lossy(&class[..n as usize]);
         if matches!(
             class.as_str(),
-            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "SkyWallpaperSurface"
+            "Progman"
+                | "WorkerW"
+                | "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "SkyWallpaperSurface"
         ) {
             return false;
         }

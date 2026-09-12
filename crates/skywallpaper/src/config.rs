@@ -74,5 +74,3 @@ fn dirs_config() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
-
-

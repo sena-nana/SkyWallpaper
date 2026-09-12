@@ -8,6 +8,15 @@
 use sky_core::{PrecipKind, SkyView, sun_dir_2d};
 
 const UNIFORM_SIZE: usize = 48;
+/// Overlay + lightning handoff; injected into both WGSL modules.
+const RAIN_OVERLAY_MIN: f32 = 0.02;
+
+fn wgsl_source(body: &str) -> String {
+    format!(
+        "const RAIN_OVERLAY_MIN: f32 = {RAIN_OVERLAY_MIN:.4};\n{}\n{body}",
+        include_str!("common.wgsl"),
+    )
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -54,35 +63,28 @@ struct SkyTarget {
     width: u32,
     height: u32,
     _texture: wgpu::Texture,
-    mip0_view: wgpu::TextureView,
+    sky_view: wgpu::TextureView,
     glass_bg: wgpu::BindGroup,
-    mip_src_bgs: Vec<wgpu::BindGroup>,
-    mip_dst_views: Vec<wgpu::TextureView>,
 }
 
 pub struct SkyRenderer {
     sky_pipeline: wgpu::RenderPipeline,
     glass_pipeline: wgpu::RenderPipeline,
-    blit_pipeline: wgpu::RenderPipeline,
     sky_bind_group: wgpu::BindGroup,
     uniform_buf: wgpu::Buffer,
     sampler: wgpu::Sampler,
     glass_bgl: wgpu::BindGroupLayout,
-    blit_bgl: wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
     targets: Vec<SkyTarget>,
     last_rain: f32,
 }
 
-fn mip_count_for(width: u32, height: u32) -> u32 {
-    let max_dim = width.max(height).max(1);
-    (max_dim.ilog2() + 1).min(6).max(1)
+fn offscreen_extent(width: u32, height: u32) -> (u32, u32) {
+    ((width.max(1) + 3) / 4, (height.max(1) + 3) / 4)
 }
 
-fn mip_view(
+fn tex_view(
     texture: &wgpu::Texture,
-    base: u32,
-    count: u32,
     usage: wgpu::TextureUsages,
     label: &str,
 ) -> wgpu::TextureView {
@@ -92,8 +94,8 @@ fn mip_view(
         dimension: Some(wgpu::TextureViewDimension::D2),
         usage: Some(usage),
         aspect: wgpu::TextureAspect::All,
-        base_mip_level: base,
-        mip_level_count: Some(count),
+        base_mip_level: 0,
+        mip_level_count: Some(1),
         base_array_layer: 0,
         array_layer_count: Some(1),
     })
@@ -165,15 +167,11 @@ impl SkyRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source(include_str!("sky.wgsl")).into()),
         });
         let glass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glass"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("glass.wgsl").into()),
-        });
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("mip blit"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("mip.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source(include_str!("glass.wgsl")).into()),
         });
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky uniforms"),
@@ -225,27 +223,6 @@ impl SkyRenderer {
                 },
             ],
         });
-        let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("mip blit bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
         let sky_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky bg"),
             layout: &sky_bgl,
@@ -261,9 +238,9 @@ impl SkyRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             lod_min_clamp: 0.0,
-            lod_max_clamp: 32.0,
+            lod_max_clamp: 0.0,
             compare: None,
             anisotropy_clamp: 1,
             border_color: None,
@@ -278,11 +255,6 @@ impl SkyRenderer {
             bind_group_layouts: &[Some(&glass_bgl)],
             immediate_size: 0,
         });
-        let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("mip blit pll"),
-            bind_group_layouts: &[Some(&blit_bgl)],
-            immediate_size: 0,
-        });
         let sky_pipeline =
             fullscreen_pipeline(device, "sky pipeline", &sky_layout, &sky_shader, format);
         let glass_pipeline = fullscreen_pipeline(
@@ -292,22 +264,13 @@ impl SkyRenderer {
             &glass_shader,
             format,
         );
-        let blit_pipeline = fullscreen_pipeline(
-            device,
-            "mip blit pipeline",
-            &blit_layout,
-            &blit_shader,
-            format,
-        );
         Self {
             sky_pipeline,
             glass_pipeline,
-            blit_pipeline,
             sky_bind_group,
             uniform_buf,
             sampler,
             glass_bgl,
-            blit_bgl,
             format,
             targets: Vec::new(),
             last_rain: 0.0,
@@ -338,34 +301,30 @@ impl SkyRenderer {
     }
 
     fn create_target(&self, device: &wgpu::Device, width: u32, height: u32) -> SkyTarget {
-        let mip_count = mip_count_for(width, height);
+        let (ow, oh) = offscreen_extent(width, height);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky offscreen"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: ow,
+                height: oh,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: mip_count,
+            mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let mip0_view = mip_view(
+        let sky_view = tex_view(
             &texture,
-            0,
-            1,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
-            "sky mip0 rt",
+            "sky offscreen rt",
         );
-        let full_view = mip_view(
+        let sample_view = tex_view(
             &texture,
-            0,
-            mip_count,
             wgpu::TextureUsages::TEXTURE_BINDING,
-            "sky mips",
+            "sky offscreen sample",
         );
         let glass_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass bg"),
@@ -377,7 +336,7 @@ impl SkyRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&full_view),
+                    resource: wgpu::BindingResource::TextureView(&sample_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -385,46 +344,12 @@ impl SkyRenderer {
                 },
             ],
         });
-        let mut mip_src_bgs = Vec::new();
-        let mut mip_dst_views = Vec::new();
-        for i in 0..mip_count.saturating_sub(1) {
-            let src = mip_view(
-                &texture,
-                i,
-                1,
-                wgpu::TextureUsages::TEXTURE_BINDING,
-                "sky mip src",
-            );
-            mip_src_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mip blit bg"),
-                layout: &self.blit_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&src),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            }));
-            mip_dst_views.push(mip_view(
-                &texture,
-                i + 1,
-                1,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-                "sky mip dst",
-            ));
-        }
         SkyTarget {
             width,
             height,
             _texture: texture,
-            mip0_view,
+            sky_view,
             glass_bg,
-            mip_src_bgs,
-            mip_dst_views,
         }
     }
 
@@ -436,41 +361,35 @@ impl SkyRenderer {
         width: u32,
         height: u32,
     ) {
-        if self.last_rain <= 0.0001 {
-            self.targets.clear();
-            color_pass(
-                encoder,
-                "sky pass",
-                view,
-                &self.sky_pipeline,
-                &self.sky_bind_group,
-            );
+        if self.last_rain <= RAIN_OVERLAY_MIN {
+            self.draw_native(encoder, view);
             return;
         }
         let idx = self.ensure_target(device, width, height);
         color_pass(
             encoder,
             "sky pass",
-            &self.targets[idx].mip0_view,
+            &self.targets[idx].sky_view,
             &self.sky_pipeline,
             &self.sky_bind_group,
         );
-        let target = &self.targets[idx];
-        for i in 0..target.mip_dst_views.len() {
-            color_pass(
-                encoder,
-                "sky mip blit",
-                &target.mip_dst_views[i],
-                &self.blit_pipeline,
-                &target.mip_src_bgs[i],
-            );
-        }
         color_pass(
             encoder,
             "glass pass",
             view,
             &self.glass_pipeline,
-            &target.glass_bg,
+            &self.targets[idx].glass_bg,
+        );
+    }
+
+    fn draw_native(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        self.targets.clear();
+        color_pass(
+            encoder,
+            "sky pass",
+            view,
+            &self.sky_pipeline,
+            &self.sky_bind_group,
         );
     }
 
@@ -481,13 +400,39 @@ impl SkyRenderer {
 
     #[cfg(test)]
     fn draw_sky_only(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        self.targets.clear();
+        self.draw_native(encoder, view);
+    }
+
+    #[cfg(test)]
+    fn draw_sky_offscreen(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        width: u32,
+        height: u32,
+    ) {
+        let idx = self.ensure_target(device, width, height);
         color_pass(
             encoder,
             "sky pass",
-            view,
+            &self.targets[idx].sky_view,
             &self.sky_pipeline,
             &self.sky_bind_group,
+        );
+    }
+
+    #[cfg(test)]
+    fn draw_glass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        let target = self
+            .targets
+            .last()
+            .expect("draw_sky_offscreen before draw_glass");
+        color_pass(
+            encoder,
+            "glass pass",
+            view,
+            &self.glass_pipeline,
+            &target.glass_bg,
         );
     }
 }
@@ -508,9 +453,15 @@ mod tests {
 
     #[test]
     fn sky_shader_parses() {
-        naga::front::wgsl::parse_str(include_str!("sky.wgsl")).expect("sky.wgsl");
-        naga::front::wgsl::parse_str(include_str!("glass.wgsl")).expect("glass.wgsl");
-        naga::front::wgsl::parse_str(include_str!("mip.wgsl")).expect("mip.wgsl");
+        naga::front::wgsl::parse_str(&wgsl_source(include_str!("sky.wgsl"))).expect("sky.wgsl");
+        naga::front::wgsl::parse_str(&wgsl_source(include_str!("glass.wgsl"))).expect("glass.wgsl");
+    }
+
+    #[test]
+    fn offscreen_is_quarter() {
+        assert_eq!(offscreen_extent(1920, 1080), (480, 270));
+        assert_eq!(offscreen_extent(160, 90), (40, 23));
+        assert_eq!(offscreen_extent(1, 1), (1, 1));
     }
 
     #[test]
@@ -590,6 +541,28 @@ mod tests {
             sunset_cloud.horizon
         );
 
+        let noon_clear = sample(&device, &queue, 50.0, 0.5, SkyWeather::clear_fallback());
+        let noon_overcast = sample(
+            &device,
+            &queue,
+            50.0,
+            0.5,
+            SkyWeather {
+                code: WeatherCode(3),
+                cloud_cover: 0.95,
+                precip: 0.0,
+                precip_kind: PrecipKind::Rain,
+                fog: 0.0,
+                thunder: false,
+            },
+        );
+        let clear_z = luma(noon_clear.zenith);
+        let over_z = luma(noon_overcast.zenith);
+        assert!(
+            over_z < clear_z - 0.04,
+            "overcast noon zenith should be darker: over={over_z:.3} clear={clear_z:.3}"
+        );
+
         let winter_noon = sample(&device, &queue, 50.0, 0.0, SkyWeather::clear_fallback());
         let summer_noon = sample(&device, &queue, 50.0, 0.5, SkyWeather::clear_fallback());
         assert!(
@@ -610,53 +583,29 @@ mod tests {
     #[test]
     fn glass_rain_tracks_precip_and_skips_snow() {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
-        let fair = SkyWeather {
-            code: WeatherCode(3),
-            cloud_cover: 0.75,
-            precip: 0.0,
-            precip_kind: PrecipKind::Rain,
-            fog: 0.0,
-            thunder: false,
-        };
-        let drizzle = SkyWeather {
-            code: WeatherCode(51),
-            cloud_cover: 0.75,
-            precip: 0.22,
-            precip_kind: PrecipKind::Rain,
-            fog: 0.0,
-            thunder: false,
-        };
-        let storm = SkyWeather {
-            code: WeatherCode(65),
-            cloud_cover: 0.75,
-            precip: 0.85,
-            precip_kind: PrecipKind::Rain,
-            fog: 0.0,
-            thunder: false,
-        };
-        let snow = SkyWeather {
-            code: WeatherCode(73),
-            cloud_cover: 0.75,
-            precip: 0.85,
-            precip_kind: PrecipKind::Snow,
-            fog: 0.0,
-            thunder: false,
-        };
-        let drizzle_glass = pixels(&device, &queue, 38.0, 0.5, drizzle, 2.4, 160, 90, false);
-        let drizzle_sky = pixels(&device, &queue, 38.0, 0.5, drizzle, 2.4, 160, 90, true);
-        let storm_glass = pixels(&device, &queue, 38.0, 0.5, storm, 2.4, 160, 90, false);
-        let storm_sky = pixels(&device, &queue, 38.0, 0.5, storm, 2.4, 160, 90, true);
-        let snow_auto = pixels(&device, &queue, 38.0, 0.5, snow, 2.4, 160, 90, false);
-        let snow_sky = pixels(&device, &queue, 38.0, 0.5, snow, 2.4, 160, 90, true);
-        let fair_auto = pixels(&device, &queue, 38.0, 0.5, fair, 2.4, 160, 90, false);
-        let fair_sky = pixels(&device, &queue, 38.0, 0.5, fair, 2.4, 160, 90, true);
-        let overlay = frac_changed(&drizzle_glass, &drizzle_sky);
-        let storm_overlay = frac_changed(&storm_glass, &storm_sky);
+        let fair = rain_wx(3, 0.0, PrecipKind::Rain);
+        let drizzle = rain_wx(51, 0.22, PrecipKind::Rain);
+        let storm = rain_wx(65, 0.85, PrecipKind::Rain);
+        let snow = rain_wx(73, 0.85, PrecipKind::Snow);
+        let mist = rain_wx(51, 0.015, PrecipKind::Rain);
+        let drizzle_glass = rain_frame(&device, &queue, drizzle, Frame::Auto);
+        let drizzle_blit = rain_frame(&device, &queue, drizzle, Frame::QuarterBlit);
+        let storm_glass = rain_frame(&device, &queue, storm, Frame::Auto);
+        let storm_blit = rain_frame(&device, &queue, storm, Frame::QuarterBlit);
+        let snow_auto = rain_frame(&device, &queue, snow, Frame::Auto);
+        let snow_sky = rain_frame(&device, &queue, snow, Frame::SkyOnly);
+        let fair_auto = rain_frame(&device, &queue, fair, Frame::Auto);
+        let fair_sky = rain_frame(&device, &queue, fair, Frame::SkyOnly);
+        let mist_auto = rain_frame(&device, &queue, mist, Frame::Auto);
+        let mist_sky = rain_frame(&device, &queue, mist, Frame::SkyOnly);
+        let overlay = frac_changed(&drizzle_glass, &drizzle_blit);
+        let storm_overlay = frac_changed(&storm_glass, &storm_blit);
         let snow_skip = mean_abs_diff(&snow_auto, &snow_sky);
         let dry_skip = mean_abs_diff(&fair_auto, &fair_sky);
+        let mist_skip = mean_abs_diff(&mist_auto, &mist_sky);
         assert!(
-            overlay > 0.01,
-            "glass overlay should change a rain frame vs sky-only {overlay:.4}"
+            overlay > 0.003,
+            "glass overlay should change a rain frame vs quarter blit {overlay:.4}"
         );
         assert!(
             storm_overlay > overlay,
@@ -669,6 +618,10 @@ mod tests {
         assert!(
             dry_skip < 0.0005,
             "dry frames should skip glass overlay {dry_skip:.4}"
+        );
+        assert!(
+            mist_skip < 0.0005,
+            "rain below overlay min should stay native-res {mist_skip:.4}"
         );
     }
 
@@ -869,6 +822,33 @@ mod tests {
         0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
     }
 
+    fn rain_wx(code: u8, precip: f32, kind: PrecipKind) -> SkyWeather {
+        SkyWeather {
+            code: WeatherCode(code),
+            cloud_cover: 0.75,
+            precip,
+            precip_kind: kind,
+            fog: 0.0,
+            thunder: false,
+        }
+    }
+
+    fn rain_frame(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        weather: SkyWeather,
+        frame: Frame,
+    ) -> Vec<u8> {
+        pixels(device, queue, 38.0, 0.5, weather, 2.4, 160, 90, frame)
+    }
+
+    #[derive(Clone, Copy)]
+    enum Frame {
+        Auto,
+        SkyOnly,
+        QuarterBlit,
+    }
+
     fn pixels(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -878,7 +858,7 @@ mod tests {
         time: f32,
         width: u32,
         height: u32,
-        sky_only: bool,
+        frame: Frame,
     ) -> Vec<u8> {
         let w = width;
         let h = height;
@@ -891,7 +871,8 @@ mod tests {
             weather,
             season,
         };
-        renderer.write_uniforms(queue, &SkyUniforms::from_view(&view, w, h, time, 0.0));
+        let mut uniforms = SkyUniforms::from_view(&view, w, h, time, 0.0);
+        renderer.write_uniforms(queue, &uniforms);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky-rain-test"),
             size: wgpu::Extent3d {
@@ -908,10 +889,17 @@ mod tests {
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let tex = texture.create_view(&Default::default());
-        if sky_only {
-            renderer.draw_sky_only(&mut encoder, &tex);
-        } else {
-            renderer.draw(device, &mut encoder, &tex, w, h);
+        match frame {
+            Frame::SkyOnly => renderer.draw_sky_only(&mut encoder, &tex),
+            Frame::Auto => renderer.draw(device, &mut encoder, &tex, w, h),
+            Frame::QuarterBlit => {
+                renderer.draw_sky_offscreen(device, &mut encoder, w, h);
+                queue.submit(Some(encoder.finish()));
+                uniforms.precip = 0.0;
+                renderer.write_uniforms(queue, &uniforms);
+                encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                renderer.draw_glass(&mut encoder, &tex);
+            }
         }
         let padded = (w * 4).div_ceil(256) * 256;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {

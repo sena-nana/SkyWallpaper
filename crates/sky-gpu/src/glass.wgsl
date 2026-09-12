@@ -1,5 +1,4 @@
-// Full-screen wet-glass overlay. Technique: grid drops, stick-slide trails,
-// finite-difference refraction, mip haze. Original WGSL (MIT).
+// Full-screen wet-glass overlay.
 
 struct Uniforms {
     sun_dir: vec3<f32>,
@@ -25,10 +24,6 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
         vec2<f32>(-1.0, 3.0),
     );
     return vec4<f32>(p[vid], 0.0, 1.0);
-}
-
-fn hash21(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
 
 fn hash22(p: vec2<f32>) -> vec2<f32> {
@@ -59,7 +54,7 @@ fn static_drops(st: vec2<f32>, t: f32, amount: f32) -> f32 {
         for (var ix = -1; ix <= 1; ix = ix + 1) {
             let cell = origin + vec2<f32>(f32(ix), f32(jy));
             let rnd = hash22(cell);
-            let density = mix(0.10, 0.48, amount);
+            let density = 0.48 * amount;
             if (rnd.x <= density) {
                 let center = cell + vec2<f32>(0.18, 0.18) + hash22(cell + vec2<f32>(3.1, 7.7)) * 0.64;
                 let life = 0.5 + 0.5 * sin(t * (0.32 + rnd.y * 0.55) + rnd.x * 6.28318);
@@ -70,7 +65,7 @@ fn static_drops(st: vec2<f32>, t: f32, amount: f32) -> f32 {
             }
         }
     }
-    return h;
+    return h * amount;
 }
 
 fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec2<f32> {
@@ -108,7 +103,7 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec2<
 }
 
 fn drops(uv: vec2<f32>, st: vec2<f32>, aspect: f32, t: f32, rain: f32) -> vec2<f32> {
-    let static_amt = smoothstep(0.02, 0.40, rain);
+    let static_amt = smoothstep(RAIN_OVERLAY_MIN, 0.40, rain);
     let trail1 = smoothstep(0.35, 0.65, rain);
     let trail2 = smoothstep(0.55, 0.90, rain);
     let speed = mix(0.35, 1.15, rain);
@@ -128,12 +123,18 @@ fn height(d: vec2<f32>) -> f32 {
     return d.x + d.y * 0.40;
 }
 
+fn sky_sample(uv: vec2<f32>) -> vec3<f32> {
+    let p = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    return textureSample(sky_tex, sky_samp, p).rgb
+        + lightning_rgb(p, u.thunder) * (1.0 - sky_fog_amt(p, u.fog));
+}
+
 @fragment
 fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = clip.xy / max(u.resolution, vec2<f32>(1.0));
     let rain = clamp(u.precip * (1.0 - u.precip_kind), 0.0, 1.0);
-    if (rain <= 0.0001) {
-        return textureSampleLevel(sky_tex, sky_samp, uv, 0.0);
+    if (rain <= RAIN_OVERLAY_MIN) {
+        return textureSample(sky_tex, sky_samp, uv);
     }
 
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
@@ -146,15 +147,18 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
         height(drops(uv + vec2<f32>(0.0, e), st + vec2<f32>(0.0, e), aspect, t, rain)) - height(field),
     );
 
-    let max_blur = mix(0.0, 4.0, pow(rain, 0.75));
-    let min_blur = mix(0.0, 1.0, smoothstep(0.0, 0.45, rain));
-    let lod = mix(max_blur - field.y * 2.2, min_blur, smoothstep(0.08, 0.28, field.x));
-    var col = textureSampleLevel(
-        sky_tex,
-        sky_samp,
-        clamp(uv + n * (0.10 * smoothstep(0.05, 0.50, rain)), vec2<f32>(0.0), vec2<f32>(1.0)),
-        max(lod, 0.0),
-    ).rgb;
+    let uv_r = uv + n * (0.10 * smoothstep(0.05, 0.50, rain));
+    let sharp = sky_sample(uv_r);
+    let texel = 4.0 / max(u.resolution, vec2<f32>(1.0));
+    let blur = sharp * 0.4
+        + sky_sample(uv_r + vec2<f32>(texel.x, 0.0)) * 0.15
+        + sky_sample(uv_r - vec2<f32>(texel.x, 0.0)) * 0.15
+        + sky_sample(uv_r + vec2<f32>(0.0, texel.y)) * 0.15
+        + sky_sample(uv_r - vec2<f32>(0.0, texel.y)) * 0.15;
+    let lum = dot(blur, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let muted = mix(blur, vec3<f32>(lum), 0.14) * vec3<f32>(0.88, 0.90, 0.95);
+    let haze = rain * (1.0 - smoothstep(0.08, 0.28, field.x));
+    var col = mix(sharp, mix(blur, muted, 0.50), haze);
 
     let rim = clamp(length(n) * 6.0, 0.0, 1.0) * field.x;
     col += vec3<f32>(0.12, 0.14, 0.16) * rim;

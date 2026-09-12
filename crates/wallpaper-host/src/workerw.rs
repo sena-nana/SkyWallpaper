@@ -6,10 +6,10 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, FindWindowW, GetWindowRect,
-    RegisterClassW, SendMessageTimeoutW, SetWindowPos, CS_HREDRAW, CS_VREDRAW, HWND_BOTTOM,
-    SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOZORDER, WM_DISPLAYCHANGE, WM_DPICHANGED, WNDCLASSW, WS_CHILD,
-    WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW,
+    FindWindowW, GetWindowRect, HWND_BOTTOM, RegisterClassW, SMTO_NORMAL, SWP_NOACTIVATE,
+    SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED, WNDCLASSW,
+    WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT, WS_VISIBLE,
 };
 use windows::core::w;
@@ -80,7 +80,14 @@ pub fn spawn_worker_w() -> Result<HWND, WorkerWError> {
 
 unsafe extern "system" fn enum_worker_w(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     unsafe {
-        if hwnd_ok(FindWindowExW(Some(hwnd), None, w!("SHELLDLL_DefView"), None)).is_some() {
+        if hwnd_ok(FindWindowExW(
+            Some(hwnd),
+            None,
+            w!("SHELLDLL_DefView"),
+            None,
+        ))
+        .is_some()
+        {
             if let Some(next) = hwnd_ok(FindWindowExW(None, Some(hwnd), w!("WorkerW"), None)) {
                 let slot = lparam.0 as *mut HWND;
                 *slot = next;
