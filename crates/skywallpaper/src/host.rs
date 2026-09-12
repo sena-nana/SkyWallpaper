@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use sky_core::{SkyView, SkyWeather};
 use wallpaper_host::{
     WallpaperEngine, foreground_is_fullscreen, on_battery, take_display_changed, target_fps,
+    work_areas_occluded,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
@@ -13,6 +14,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::LocationMode;
 use crate::state::AppState;
 use crate::tray::{self, Tray};
+
+const HEALTH_INTERVAL: Duration = Duration::from_millis(500);
+const WEATHER_INTERVAL: Duration = Duration::from_secs(20 * 60);
+const PAUSED_SLEEP: Duration = Duration::from_millis(200);
+const WAIT_SLICE: Duration = Duration::from_millis(16);
 
 pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let mut engine = match WallpaperEngine::attach() {
@@ -32,12 +38,13 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         }
     };
 
-    bootstrap_location(&state);
-    refresh_weather(&state);
-
     let tray = tray::build(&state)?;
+    spawn_weather_worker(state.clone());
+
     let mut last_frame = Instant::now();
     let mut last_weather = Instant::now();
+    let mut last_health = Instant::now();
+    let mut rt = Runtime::new(&state, &mut engine);
 
     loop {
         if pump_messages() {
@@ -49,27 +56,25 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             break;
         }
 
-        if take_display_changed() {
-            let _ = engine.rebuild();
+        if last_health.elapsed() >= HEALTH_INTERVAL {
+            last_health = Instant::now();
+            rt.refresh(&state, &mut engine);
         }
 
-        if state.refresh_weather.swap(false, Ordering::Relaxed)
-            || last_weather.elapsed() > Duration::from_secs(20 * 60)
-        {
-            refresh_weather(&state);
+        if last_weather.elapsed() >= WEATHER_INTERVAL {
+            state.refresh_weather.store(true, Ordering::Relaxed);
             last_weather = Instant::now();
         }
 
-        let cfg = state.config.lock().unwrap().clone();
-        let fullscreen = cfg.pause_on_fullscreen && foreground_is_fullscreen();
-        let fps = target_fps(state.is_paused(), on_battery(), fullscreen);
+        let fps = target_fps(state.is_paused(), rt.battery, rt.fullscreen, rt.occluded);
         if fps == 0 {
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(PAUSED_SLEEP);
             continue;
         }
         let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
-        if last_frame.elapsed() < interval {
-            std::thread::sleep(Duration::from_millis(4));
+        let elapsed = last_frame.elapsed();
+        if elapsed < interval {
+            std::thread::sleep((interval - elapsed).min(WAIT_SLICE));
             continue;
         }
         last_frame = Instant::now();
@@ -81,14 +86,102 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         }
         engine.thunder_flash *= 0.84;
 
-        let view = SkyView::now(cfg.latitude, cfg.longitude, weather);
-        if let Err(err) = engine.render(&view) {
+        let view = SkyView::now(rt.latitude, rt.longitude, weather);
+        if let Err(err) = engine.render(&view, &rt.skip) {
             state.set_status(err.to_string());
         }
     }
 
     engine.teardown();
     Ok(())
+}
+
+struct Runtime {
+    latitude: f64,
+    longitude: f64,
+    battery: bool,
+    fullscreen: bool,
+    skip: Vec<bool>,
+    occluded: bool,
+    layout: Vec<(i32, i32, u32, u32)>,
+}
+
+impl Runtime {
+    fn new(state: &AppState, engine: &mut WallpaperEngine) -> Self {
+        let mut rt = Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            battery: false,
+            fullscreen: false,
+            skip: Vec::new(),
+            occluded: false,
+            layout: engine.monitor_layout(),
+        };
+        rt.refresh(state, engine);
+        rt
+    }
+
+    fn refresh(&mut self, state: &AppState, engine: &mut WallpaperEngine) {
+        let pause_on_fullscreen = {
+            let cfg = state.config.lock().unwrap();
+            self.latitude = cfg.latitude;
+            self.longitude = cfg.longitude;
+            cfg.pause_on_fullscreen
+        };
+        recover_host(state, engine, &mut self.layout);
+        self.battery = on_battery();
+        self.fullscreen = pause_on_fullscreen && foreground_is_fullscreen();
+        self.skip = work_areas_occluded(&engine.slot_work_areas());
+        self.occluded = !self.skip.is_empty() && self.skip.iter().all(|hidden| *hidden);
+    }
+}
+
+fn recover_host(
+    state: &AppState,
+    engine: &mut WallpaperEngine,
+    layout: &mut Vec<(i32, i32, u32, u32)>,
+) {
+    let layout_now = engine.monitor_layout();
+    let dead = !engine.parent_alive();
+    let wrong = engine.slot_count() != layout_now.len();
+    if !dead && !wrong && !take_display_changed() && layout_now == *layout {
+        return;
+    }
+    match engine.recover() {
+        Ok(()) => {
+            *layout = engine.monitor_layout();
+            if dead || wrong {
+                state.set_status("WorkerW reattached");
+            }
+        }
+        Err(err) => state.set_status(format!("WorkerW: {err}")),
+    }
+}
+
+fn spawn_weather_worker(state: Arc<AppState>) {
+    let worker = state.clone();
+    if let Err(err) = std::thread::Builder::new()
+        .name("skywallpaper-weather".into())
+        .spawn(move || weather_loop(worker))
+    {
+        eprintln!("weather worker: {err}");
+        bootstrap_location(&state);
+        refresh_weather(&state);
+    }
+}
+
+fn weather_loop(state: Arc<AppState>) {
+    bootstrap_location(&state);
+    loop {
+        if state.shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        if state.refresh_weather.swap(false, Ordering::Relaxed) {
+            refresh_weather(&state);
+            continue;
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
 }
 
 fn bootstrap_location(state: &AppState) {

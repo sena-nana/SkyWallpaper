@@ -23,20 +23,16 @@ const BLOB_POWER: f32 = 0.85;
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    var p = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
-    );
-    let pos = p[vid];
-    var out: VsOut;
-    out.pos = vec4<f32>(pos, 0.0, 1.0);
-    out.uv = vec2<f32>(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);
-    return out;
+    // Sun/season/time only; same on all three vertices, so interpolation is a uniform.
+    @location(1) zenith: vec3<f32>,
+    @location(2) mid: vec3<f32>,
+    @location(3) horizon: vec3<f32>,
+    @location(4) wash: vec2<f32>,
+    @location(5) well: vec2<f32>,
+    @location(6) cool: vec2<f32>,
+    @location(7) mesh_mid: vec2<f32>,
+    @location(8) well_r: vec2<f32>,
+    @location(9) punch: f32,
 }
 
 fn noise2(p: vec2<f32>) -> f32 {
@@ -434,6 +430,33 @@ fn snow(uv: vec2<f32>) -> f32 {
     return acc * amt;
 }
 
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
+    var p = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let pos = p[vid];
+    let sun = normalize(u.sun_dir);
+    let alt_deg = degrees(asin(clamp(sun.y, -1.0, 1.0)));
+    let stops = solar_stops(alt_deg, u.season);
+    let mesh = mesh_layout(alt_deg, u.season, u.time);
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = vec2<f32>(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);
+    out.zenith = stops.zenith;
+    out.mid = stops.mid;
+    out.horizon = stops.horizon;
+    out.wash = mesh.wash;
+    out.well = mesh.well;
+    out.cool = mesh.cool;
+    out.mesh_mid = mesh.mid;
+    out.well_r = mesh.well_r;
+    out.punch = mesh.punch;
+    return out;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -441,8 +464,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let sun = normalize(u.sun_dir);
     let alt_deg = degrees(asin(clamp(sun.y, -1.0, 1.0)));
-    let stops = solar_stops(alt_deg, u.season);
-    let mesh = mesh_layout(alt_deg, u.season, u.time);
+    let stops = SkyStops(in.zenith, in.mid, in.horizon);
+    let mesh = MeshLayout(in.wash, in.well, in.cool, in.mesh_mid, in.well_r, in.punch);
     let look = mesh_look(sky_uv, stops, mesh, alt_deg);
 
     var col = look;

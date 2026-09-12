@@ -194,7 +194,7 @@ impl SkyRenderer {
             label: Some("sky bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -446,6 +446,10 @@ impl SkyRenderer {
             &target.glass_bg,
         );
     }
+}
+
+pub fn wallpaper_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
 }
 
 pub fn pick_srgb_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
@@ -886,7 +890,7 @@ mod tests {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("sky-gpu-test"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: wallpaper_device_limits(&adapter),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),

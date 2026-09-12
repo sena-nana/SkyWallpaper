@@ -7,10 +7,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW,
-    FindWindowW, GetWindowRect, HWND_BOTTOM, RegisterClassW, SMTO_NORMAL, SWP_NOACTIVATE,
+    FindWindowW, GetWindowRect, HWND_BOTTOM, IsWindow, RegisterClassW, SMTO_NORMAL, SWP_NOACTIVATE,
     SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED, WNDCLASSW,
     WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_VISIBLE,
+    WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::w;
 
@@ -33,6 +33,7 @@ pub struct MonitorRect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub work: RECT,
 }
 
 fn hwnd_ok(result: windows::core::Result<HWND>) -> Option<HWND> {
@@ -40,41 +41,47 @@ fn hwnd_ok(result: windows::core::Result<HWND>) -> Option<HWND> {
 }
 
 pub fn spawn_worker_w() -> Result<HWND, WorkerWError> {
+    let progman =
+        hwnd_ok(unsafe { FindWindowW(w!("Progman"), None) }).ok_or(WorkerWError::NoProgman)?;
+    if let Some(hwnd) = find_worker_w(progman) {
+        return Ok(hwnd);
+    }
+    // 0x052C is undocumented; it can toggle WorkerW on some builds, so only
+    // send it when the window is missing, and try Win10 then Win11 payloads.
+    send_progman_spawn(progman, 0, 0);
+    if let Some(hwnd) = find_worker_w(progman) {
+        return Ok(hwnd);
+    }
+    send_progman_spawn(progman, 0xD, 0x1);
+    find_worker_w(progman).ok_or(WorkerWError::NoWorkerW)
+}
+
+fn send_progman_spawn(progman: HWND, wparam: usize, lparam: isize) {
     unsafe {
-        let progman = hwnd_ok(FindWindowW(w!("Progman"), None)).ok_or(WorkerWError::NoProgman)?;
         let mut result = 0usize;
         let _ = SendMessageTimeoutW(
             progman,
             0x052C,
-            WPARAM(0),
-            LPARAM(0),
+            WPARAM(wparam),
+            LPARAM(lparam),
             SMTO_NORMAL,
             1000,
             Some(&mut result),
         );
-        let _ = SendMessageTimeoutW(
-            progman,
-            0x052C,
-            WPARAM(0xD),
-            LPARAM(0x1),
-            SMTO_NORMAL,
-            1000,
-            Some(&mut result),
-        );
+    }
+}
 
+fn find_worker_w(progman: HWND) -> Option<HWND> {
+    unsafe {
         let mut found = HWND::default();
         let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
             Some(enum_worker_w),
             LPARAM(&mut found as *mut HWND as isize),
         );
-        if found.is_invalid() {
-            found = hwnd_ok(FindWindowExW(Some(progman), None, w!("WorkerW"), None))
-                .unwrap_or_default();
+        if !found.is_invalid() {
+            return Some(found);
         }
-        if found.is_invalid() {
-            return Err(WorkerWError::NoWorkerW);
-        }
-        Ok(found)
+        hwnd_ok(FindWindowExW(Some(progman), None, w!("WorkerW"), None))
     }
 }
 
@@ -163,6 +170,42 @@ pub fn destroy_hwnd(hwnd: HWND) {
     }
 }
 
+pub fn is_window(hwnd: HWND) -> bool {
+    unsafe { IsWindow(Some(hwnd)).as_bool() }
+}
+
+/// Top-level so we get `WM_DISPLAYCHANGE`; WorkerW children do not.
+pub fn create_listener_window() -> Result<HWND, WorkerWError> {
+    unsafe {
+        let hinstance = GetModuleHandleW(None)?;
+        let hwnd = CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            w!("SkyWallpaperSurface"),
+            w!("SkyWallpaperListener"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(hinstance.into()),
+            None,
+        )?;
+        if hwnd.is_invalid() {
+            return Err(WorkerWError::CreateWindow);
+        }
+        Ok(hwnd)
+    }
+}
+
+pub fn monitor_layout_key(parent: HWND) -> Vec<(i32, i32, u32, u32)> {
+    list_monitors_relative_to(parent)
+        .into_iter()
+        .map(|m| (m.x, m.y, m.width, m.height))
+        .collect()
+}
+
 pub fn list_monitors_relative_to(parent: HWND) -> Vec<MonitorRect> {
     let mut parent_rect = RECT::default();
     unsafe {
@@ -187,6 +230,12 @@ pub fn list_monitors_relative_to(parent: HWND) -> Vec<MonitorRect> {
             y: 0,
             width: 1920,
             height: 1080,
+            work: RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
         });
     }
     monitors
@@ -216,6 +265,7 @@ unsafe extern "system" fn monitor_enum(
                 y: r.top - ctx.parent.top,
                 width: (r.right - r.left).max(1) as u32,
                 height: (r.bottom - r.top).max(1) as u32,
+                work: info.rcWork,
             });
         }
         windows::core::BOOL(1)

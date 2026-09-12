@@ -6,13 +6,14 @@ use raw_window_handle::{
     RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
 use sky_core::SkyView;
-use sky_gpu::{SkyRenderer, SkyUniforms, pick_srgb_format};
+use sky_gpu::{SkyRenderer, SkyUniforms, pick_srgb_format, wallpaper_device_limits};
 use wgpu::SurfaceTargetUnsafe;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::workerw::{
-    WorkerWError, create_monitor_window, destroy_hwnd, list_monitors_relative_to,
-    register_surface_class, spawn_worker_w,
+    MonitorRect, WorkerWError, create_listener_window, create_monitor_window, destroy_hwnd,
+    is_window, list_monitors_relative_to, monitor_layout_key, register_surface_class,
+    spawn_worker_w,
 };
 
 pub struct WallpaperEngine {
@@ -23,6 +24,7 @@ pub struct WallpaperEngine {
     renderer: Option<SkyRenderer>,
     slots: Vec<SurfaceSlot>,
     parent: HWND,
+    listener: HWND,
     start: Instant,
     pub thunder_flash: f32,
     pub thunder_seed: f32,
@@ -32,6 +34,7 @@ struct SurfaceSlot {
     hwnd: HWND,
     width: u32,
     height: u32,
+    work: RECT,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
 }
@@ -61,6 +64,7 @@ impl WallpaperEngine {
     pub fn attach() -> Result<Self, EngineError> {
         register_surface_class().map_err(EngineError::WorkerW)?;
         let parent = spawn_worker_w().map_err(EngineError::WorkerW)?;
+        let listener = create_listener_window().unwrap_or_default();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -75,6 +79,7 @@ impl WallpaperEngine {
             renderer: None,
             slots: Vec::new(),
             parent,
+            listener,
             start: Instant::now(),
             thunder_flash: 0.0,
             thunder_seed: 0.0,
@@ -83,72 +88,128 @@ impl WallpaperEngine {
         Ok(engine)
     }
 
-    pub fn rebuild(&mut self) -> Result<(), EngineError> {
-        for slot in self.slots.drain(..) {
-            destroy_hwnd(slot.hwnd);
+    pub fn parent_alive(&self) -> bool {
+        is_window(self.parent)
+    }
+
+    pub fn monitor_layout(&self) -> Vec<(i32, i32, u32, u32)> {
+        monitor_layout_key(self.parent)
+    }
+
+    pub fn slot_work_areas(&self) -> Vec<RECT> {
+        self.slots.iter().map(|slot| slot.work).collect()
+    }
+
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn recover(&mut self) -> Result<(), EngineError> {
+        if self.parent_alive() {
+            self.rebuild().or_else(|_| self.reattach())
+        } else {
+            self.reattach()
         }
-        let monitors = list_monitors_relative_to(self.parent);
-        for monitor in monitors {
-            let hwnd =
-                create_monitor_window(self.parent, &monitor).map_err(EngineError::WorkerW)?;
-            let target = WallpaperHwnd { hwnd };
-            let unsafe_target = unsafe { SurfaceTargetUnsafe::from_window(&target) }
-                .map_err(|err| EngineError::Surface(format!("{err:?}")))?;
-            let surface = unsafe { self.instance.create_surface_unsafe(unsafe_target) }
-                .map_err(|err| EngineError::Surface(err.to_string()))?;
-            let caps = surface.get_capabilities(&self.adapter);
-            let format = pick_srgb_format(&caps.formats);
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                color_space: wgpu::SurfaceColorSpace::Srgb,
-                width: monitor.width.max(1),
-                height: monitor.height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                desired_maximum_frame_latency: 2,
-                alpha_mode: caps.alpha_modes[0],
-                view_formats: vec![],
-            };
-            surface.configure(&self.device, &config);
-            if self.renderer.is_none() {
-                self.renderer = Some(SkyRenderer::new(&self.device, format));
+    }
+
+    pub fn reattach(&mut self) -> Result<(), EngineError> {
+        let parent = spawn_worker_w().map_err(EngineError::WorkerW)?;
+        let previous = self.parent;
+        self.teardown();
+        self.parent = parent;
+        self.rebuild().inspect_err(|_| {
+            self.teardown();
+            self.parent = previous;
+        })
+    }
+
+    pub fn rebuild(&mut self) -> Result<(), EngineError> {
+        self.teardown();
+        for monitor in list_monitors_relative_to(self.parent) {
+            if let Err(err) = self.add_slot(&monitor) {
+                self.teardown();
+                return Err(err);
             }
-            self.slots.push(SurfaceSlot {
-                hwnd,
-                width: config.width,
-                height: config.height,
-                surface,
-                config,
-            });
         }
         if self.slots.is_empty() {
             return Err(EngineError::NoMonitor);
         }
+        let sizes = self.slot_sizes();
         if let Some(renderer) = self.renderer.as_mut() {
-            let sizes: Vec<(u32, u32)> = self
-                .slots
-                .iter()
-                .map(|slot| (slot.width, slot.height))
-                .collect();
             renderer.retain_sizes(&sizes);
         }
         Ok(())
+    }
+
+    fn slot_sizes(&self) -> Vec<(u32, u32)> {
+        self.slots
+            .iter()
+            .map(|slot| (slot.width, slot.height))
+            .collect()
+    }
+
+    fn add_slot(&mut self, monitor: &MonitorRect) -> Result<(), EngineError> {
+        let hwnd = create_monitor_window(self.parent, monitor).map_err(EngineError::WorkerW)?;
+        let slot = self
+            .configure_slot(hwnd, monitor)
+            .inspect_err(|_| destroy_hwnd(hwnd))?;
+        self.slots.push(slot);
+        Ok(())
+    }
+
+    fn configure_slot(
+        &mut self,
+        hwnd: HWND,
+        monitor: &MonitorRect,
+    ) -> Result<SurfaceSlot, EngineError> {
+        let target = WallpaperHwnd { hwnd };
+        let unsafe_target = unsafe { SurfaceTargetUnsafe::from_window(&target) }
+            .map_err(|err| EngineError::Surface(format!("{err:?}")))?;
+        let surface = unsafe { self.instance.create_surface_unsafe(unsafe_target) }
+            .map_err(|err| EngineError::Surface(err.to_string()))?;
+        let caps = surface.get_capabilities(&self.adapter);
+        let format = pick_srgb_format(&caps.formats);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            color_space: wgpu::SurfaceColorSpace::Srgb,
+            width: monitor.width.max(1),
+            height: monitor.height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+        };
+        surface.configure(&self.device, &config);
+        if self.renderer.is_none() {
+            self.renderer = Some(SkyRenderer::new(&self.device, format));
+        }
+        Ok(SurfaceSlot {
+            hwnd,
+            width: config.width,
+            height: config.height,
+            work: monitor.work,
+            surface,
+            config,
+        })
     }
 
     pub fn elapsed(&self) -> f32 {
         self.start.elapsed().as_secs_f32()
     }
 
-    pub fn render(&mut self, view: &SkyView) -> Result<(), EngineError> {
+    pub fn render(&mut self, view: &SkyView, skip: &[bool]) -> Result<(), EngineError> {
+        if self.slots.is_empty() {
+            return Err(EngineError::NoMonitor);
+        }
         let time = self.elapsed();
+        let sizes = self.slot_sizes();
         let renderer = self.renderer.as_mut().ok_or(EngineError::NoMonitor)?;
-        let sizes: Vec<(u32, u32)> = self
-            .slots
-            .iter()
-            .map(|slot| (slot.width, slot.height))
-            .collect();
         renderer.retain_sizes(&sizes);
-        for slot in &self.slots {
+        for (index, slot) in self.slots.iter().enumerate() {
+            if skip.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let uniforms = SkyUniforms::from_flash(
                 view,
                 slot.width,
@@ -200,6 +261,10 @@ impl WallpaperEngine {
 impl Drop for WallpaperEngine {
     fn drop(&mut self) {
         self.teardown();
+        if is_window(self.listener) {
+            destroy_hwnd(self.listener);
+            self.listener = HWND::default();
+        }
     }
 }
 
@@ -217,7 +282,7 @@ fn pollster_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("skywallpaper"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        required_limits: wallpaper_device_limits(adapter),
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         trace: wgpu::Trace::Off,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),

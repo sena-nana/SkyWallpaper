@@ -417,17 +417,7 @@ fn t(zh: bool, z: &'static str, e: &'static str) -> &'static str {
 
 fn slider(value: f32, min: f32, max: f32, step: f32, label: &str) -> RangeField {
     let v = f64::from(value.clamp(min, max));
-    RangeField::new(v, f64::from(min), f64::from(max), f64::from(step))
-        .unwrap_or_else(|_| {
-            RangeField::new(
-                f64::from(min),
-                f64::from(min),
-                f64::from(max),
-                f64::from(step),
-            )
-            .expect("range")
-        })
-        .label(label)
+    RangeField::new(v, f64::from(min), f64::from(max), f64::from(step)).label(label)
 }
 
 #[cfg(test)]

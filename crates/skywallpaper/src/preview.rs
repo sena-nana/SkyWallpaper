@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use sky_core::{SkyView, SkyWeather};
 use sky_gpu::{SkyRenderer, SkyUniforms, pick_srgb_format};
@@ -29,11 +29,14 @@ struct Gpu {
     renderer: SkyRenderer,
 }
 
+const PREVIEW_FRAME: Duration = Duration::from_millis(33);
+
 struct PreviewApp {
     opts: PreviewOpts,
     window: Option<Arc<dyn Window>>,
     gpu: Option<Gpu>,
     start: Instant,
+    last_redraw: Instant,
     thunder: f32,
     thunder_seed: f32,
     anim_hold: Option<f32>,
@@ -44,7 +47,7 @@ struct PreviewApp {
 
 pub fn run(mut opts: PreviewOpts) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait);
     let debug_cache = opts
         .debug_path
         .as_ref()
@@ -55,6 +58,7 @@ pub fn run(mut opts: PreviewOpts) -> anyhow::Result<()> {
         window: None,
         gpu: None,
         start: Instant::now(),
+        last_redraw: Instant::now(),
         thunder: 0.0,
         thunder_seed: 0.0,
         anim_hold: None,
@@ -88,6 +92,7 @@ impl ApplicationHandler for PreviewApp {
         match init_gpu(window.clone()) {
             Ok(gpu) => {
                 self.gpu = Some(gpu);
+                window.request_redraw();
                 self.window = Some(window);
             }
             Err(err) => {
@@ -120,9 +125,13 @@ impl ApplicationHandler for PreviewApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
-        if let Some(window) = &self.window {
-            window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let next = self.last_redraw + PREVIEW_FRAME;
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        if Instant::now() >= next {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
         }
     }
 }
@@ -160,6 +169,7 @@ impl PreviewApp {
     }
 
     fn redraw(&mut self) {
+        self.last_redraw = Instant::now();
         let elapsed = self.start.elapsed().as_secs_f32();
         let debug = self.refresh_debug();
         let Some(gpu) = self.gpu.as_mut() else {

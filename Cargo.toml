@@ -36,6 +36,7 @@ ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 wgpu = "30.0.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
     "Win32_System_Power",
