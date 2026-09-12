@@ -7,12 +7,12 @@ use raw_window_handle::{
 };
 use sky_core::SkyView;
 use sky_gpu::{SkyRenderer, SkyUniforms, pick_srgb_format};
-use windows::Win32::Foundation::HWND;
 use wgpu::SurfaceTargetUnsafe;
+use windows::Win32::Foundation::HWND;
 
 use crate::workerw::{
-    create_monitor_window, destroy_hwnd, list_monitors_relative_to, register_surface_class,
-    spawn_worker_w, WorkerWError,
+    WorkerWError, create_monitor_window, destroy_hwnd, list_monitors_relative_to,
+    register_surface_class, spawn_worker_w,
 };
 
 pub struct WallpaperEngine {
@@ -87,7 +87,8 @@ impl WallpaperEngine {
         }
         let monitors = list_monitors_relative_to(self.parent);
         for monitor in monitors {
-            let hwnd = create_monitor_window(self.parent, &monitor).map_err(EngineError::WorkerW)?;
+            let hwnd =
+                create_monitor_window(self.parent, &monitor).map_err(EngineError::WorkerW)?;
             let target = WallpaperHwnd { hwnd };
             let unsafe_target = unsafe { SurfaceTargetUnsafe::from_window(&target) }
                 .map_err(|err| EngineError::Surface(format!("{err:?}")))?;
@@ -121,6 +122,14 @@ impl WallpaperEngine {
         if self.slots.is_empty() {
             return Err(EngineError::NoMonitor);
         }
+        if let Some(renderer) = self.renderer.as_mut() {
+            let sizes: Vec<(u32, u32)> = self
+                .slots
+                .iter()
+                .map(|slot| (slot.width, slot.height))
+                .collect();
+            renderer.retain_sizes(&sizes);
+        }
         Ok(())
     }
 
@@ -129,16 +138,17 @@ impl WallpaperEngine {
     }
 
     pub fn render(&mut self, view: &SkyView) -> Result<(), EngineError> {
-        let renderer = self.renderer.as_ref().ok_or(EngineError::NoMonitor)?;
         let time = self.elapsed();
+        let renderer = self.renderer.as_mut().ok_or(EngineError::NoMonitor)?;
+        let sizes: Vec<(u32, u32)> = self
+            .slots
+            .iter()
+            .map(|slot| (slot.width, slot.height))
+            .collect();
+        renderer.retain_sizes(&sizes);
         for slot in &self.slots {
-            let uniforms = SkyUniforms::from_view(
-                view,
-                slot.width,
-                slot.height,
-                time,
-                self.thunder_flash,
-            );
+            let uniforms =
+                SkyUniforms::from_view(view, slot.width, slot.height, time, self.thunder_flash);
             renderer.write_uniforms(&self.queue, &uniforms);
             let frame = match slot.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame)
@@ -151,13 +161,21 @@ impl WallpaperEngine {
                 | wgpu::CurrentSurfaceTexture::Occluded
                 | wgpu::CurrentSurfaceTexture::Validation => continue,
             };
-            let view_tex = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let view_tex = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("sky wallpaper"),
                 });
-            renderer.draw(&mut encoder, &view_tex);
+            renderer.draw(
+                &self.device,
+                &mut encoder,
+                &view_tex,
+                slot.width,
+                slot.height,
+            );
             self.queue.submit(Some(encoder.finish()));
             self.queue.present(frame);
         }
@@ -187,9 +205,7 @@ fn pollster_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, EngineEr
     .map_err(|err| EngineError::Gpu(err.to_string()))
 }
 
-fn pollster_device(
-    adapter: &wgpu::Adapter,
-) -> Result<(wgpu::Device, wgpu::Queue), EngineError> {
+fn pollster_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), EngineError> {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("skywallpaper"),
         required_features: wgpu::Features::empty(),

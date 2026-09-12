@@ -185,6 +185,8 @@ impl PreviewApp {
         };
         let uniforms =
             SkyUniforms::from_view(&view, gpu.config.width, gpu.config.height, time, thunder);
+        gpu.renderer
+            .retain_sizes(&[(gpu.config.width, gpu.config.height)]);
         gpu.renderer.write_uniforms(&gpu.queue, &uniforms);
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -203,7 +205,13 @@ impl PreviewApp {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("preview"),
             });
-        gpu.renderer.draw(&mut encoder, &tex);
+        gpu.renderer.draw(
+            &gpu.device,
+            &mut encoder,
+            &tex,
+            gpu.config.width,
+            gpu.config.height,
+        );
         gpu.queue.submit(Some(encoder.finish()));
         gpu.queue.present(frame);
     }

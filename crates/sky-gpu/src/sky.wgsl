@@ -374,17 +374,6 @@ fn clouds(uv: vec2<f32>) -> f32 {
     return smoothstep(threshold, threshold + 0.28, n) * mix(0.15, 1.0, cover) * fade;
 }
 
-fn rain(uv: vec2<f32>) -> f32 {
-    let t = u.time * 2.8;
-    let st = vec2<f32>(uv.x * 42.0, uv.y * 18.0 - t);
-    let id = floor(st);
-    let f = fract(st);
-    let h = hash21(id);
-    let sx = fract(h * 13.7);
-    let drop = smoothstep(0.07, 0.0, abs(f.x - sx)) * smoothstep(0.0, 0.15, f.y) * smoothstep(1.0, 0.55, f.y);
-    return drop * u.precip * (1.0 - u.precip_kind);
-}
-
 fn snow(uv: vec2<f32>) -> f32 {
     let t = u.time * 0.35;
     var acc = 0.0;
@@ -465,7 +454,6 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     col = mix(col, cloud_col, cld * 0.88);
     col += cloud_col * cld * u.thunder * 1.8;
 
-    col += vec3<f32>(0.75, 0.85, 1.0) * rain(uv) * 0.55;
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
     col += vec3<f32>(0.85, 0.9, 1.0) * lightning_bolt(uv) * 2.4;
