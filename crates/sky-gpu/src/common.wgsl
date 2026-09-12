@@ -2,6 +2,10 @@ fn hash21(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
 
+fn hash22(p: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(hash21(p), hash21(p + vec2<f32>(19.2, 8.4)));
+}
+
 fn view_dir(s: f32) -> vec3<f32> {
     // s=0 at the horizon, s=1 toward mid-sky.
     let focal_z = 1.0 / tan(75.0 * 0.5 * 3.141592653589793 / 180.0);

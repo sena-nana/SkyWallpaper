@@ -26,10 +26,6 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p[vid], 0.0, 1.0);
 }
 
-fn hash22(p: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(hash21(p), hash21(p + vec2<f32>(19.2, 8.4)));
-}
-
 fn smin(a: f32, b: f32, k: f32) -> f32 {
     let kk = max(k, 1e-4);
     let h = clamp(0.5 + 0.5 * (b - a) / kk, 0.0, 1.0);

@@ -259,15 +259,50 @@ fn mesh_look(uv: vec2<f32>, stops: SkyStops, mesh: MeshLayout, alt_deg: f32) -> 
     return mix_oklab(col, sunset_bias(well_col), w1 * twilight * 0.35);
 }
 
+fn star_layer(uv: vec2<f32>, t: f32) -> vec3<f32> {
+    let gid = floor(uv);
+    let gv = fract(uv) - 0.5;
+    var col = vec3<f32>(0.0);
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let offs = vec2<f32>(f32(x), f32(y));
+            let cell = gid + offs;
+            let n = hash21(cell);
+            let size = fract(n * 13.51);
+            if (size < 0.68) {
+                continue;
+            }
+            let p = gv - offs - (hash22(cell) - 0.5);
+            let d = max(length(p), 1e-4);
+            let sx = smoothstep(0.032, 0.0, abs(p.x)) * smoothstep(0.40, 0.0, abs(p.y));
+            let sy = smoothstep(0.032, 0.0, abs(p.y)) * smoothstep(0.40, 0.0, abs(p.x));
+            let core = (0.016 / d + max(sx, sy) * smoothstep(0.94, 0.995, size) * 0.40)
+                * smoothstep(0.46, 0.09, d);
+            let temp = fract(n * 7.13);
+            let tint = mix(
+                mix(vec3<f32>(0.72, 0.84, 1.00), vec3<f32>(0.96, 0.97, 1.00), smoothstep(0.12, 0.52, temp)),
+                vec3<f32>(1.00, 0.88, 0.68),
+                smoothstep(0.78, 0.96, temp),
+            );
+            let tw = 0.80 + 0.20 * sin(t * (1.05 + n * 2.6) + n * 17.0);
+            col += tint * core * (0.30 + 0.95 * (size - 0.68) / 0.32) * tw;
+        }
+    }
+    return col;
+}
+
 fn stars(uv: vec2<f32>, night: f32) -> vec3<f32> {
     if (night <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let n = floor(uv * vec2<f32>(96.0, 54.0));
-    let h = hash21(n);
-    let spark = smoothstep(0.9965, 1.0, h);
-    let twinkle = 0.7 + 0.3 * sin(u.time * (1.5 + h * 3.0) + h * 20.0);
-    return vec3<f32>(0.95, 0.96, 1.0) * (spark * twinkle * night * 0.55);
+    let aspect = u.resolution.x / max(u.resolution.y, 1.0);
+    let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y);
+    let horizon = smoothstep(0.04, 0.24, uv.y);
+    var col = vec3<f32>(0.0);
+    col += star_layer(p * 15.0, u.time);
+    col += star_layer(p * 27.0 + vec2<f32>(19.7, 8.1), u.time * 1.07) * 0.58;
+    col += star_layer(p * 43.0 + vec2<f32>(5.3, 23.9), u.time * 0.91) * 0.34;
+    return col * night * horizon * 0.70;
 }
 
 fn luma3(c: vec3<f32>) -> f32 {
@@ -384,7 +419,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var col = look;
     col = weather_grade(col, look, stops, sun.y);
 
-    let night = smoothstep(0.02, -0.22, sun.y);
+    let night = smoothstep(-0.02, -0.30, sun.y);
     col += stars(sky_uv, night * (1.0 - u.cloud_cover * 0.85));
 
     let cld = clouds(sky_uv);

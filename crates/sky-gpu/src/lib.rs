@@ -618,6 +618,46 @@ mod tests {
     }
 
     #[test]
+    fn stars_appear_at_night_and_vanish_by_day() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let clear = SkyWeather::clear_fallback();
+        let overcast = SkyWeather {
+            code: WeatherCode(3),
+            cloud_cover: 0.9,
+            precip: 0.0,
+            precip_kind: PrecipKind::Rain,
+            fog: 0.0,
+            thunder: false,
+        };
+        const W: u32 = 160;
+        const H: u32 = 90;
+        let night = pixels(&device, &queue, -30.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
+        let twilight = pixels(&device, &queue, -6.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
+        let noon = pixels(&device, &queue, 70.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
+        let cloudy = pixels(&device, &queue, -30.0, 0.5, overcast, 12.0, W, H, Frame::SkyOnly);
+        let night_peaks = isolated_peaks(&night, W, H, 0.12, 0.34);
+        let twilight_peaks = isolated_peaks(&twilight, W, H, 0.12, 0.34);
+        let noon_peaks = isolated_peaks(&noon, W, H, 0.12, 0.34);
+        let cloudy_peaks = isolated_peaks(&cloudy, W, H, 0.12, 0.34);
+        assert!(
+            night_peaks >= 8,
+            "clear night should show scattered star cores, got {night_peaks}"
+        );
+        assert!(
+            noon_peaks <= 1,
+            "noon should not have star cores, got {noon_peaks}"
+        );
+        assert!(
+            twilight_peaks < night_peaks,
+            "twilight stars should be weaker: twilight={twilight_peaks} night={night_peaks}"
+        );
+        assert!(
+            cloudy_peaks < night_peaks,
+            "clouds should mute stars: cloudy={cloudy_peaks} night={night_peaks}"
+        );
+    }
+
+    #[test]
     fn glass_rain_tracks_precip_and_skips_snow() {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
         let fair = rain_wx(3, 0.0, PrecipKind::Rain);
@@ -1055,5 +1095,42 @@ mod tests {
             n += 1.0;
         }
         acc / n.max(1.0)
+    }
+
+    fn isolated_peaks(rgba: &[u8], width: u32, height: u32, margin: f32, floor: f32) -> u32 {
+        let luma_at = |x: u32, y: u32| {
+            let i = ((y * width + x) * 4) as usize;
+            luma([
+                f32::from(rgba[i]) / 255.0,
+                f32::from(rgba[i + 1]) / 255.0,
+                f32::from(rgba[i + 2]) / 255.0,
+            ])
+        };
+        let y_max = (height as f32 * 0.78) as u32;
+        let mut n = 0u32;
+        for y in 1..y_max.saturating_sub(1).max(1) {
+            for x in 1..width - 1 {
+                let l = luma_at(x, y);
+                if l < floor {
+                    continue;
+                }
+                let mut neigh = 0.0f32;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        neigh = neigh.max(luma_at(
+                            x.saturating_add_signed(dx),
+                            y.saturating_add_signed(dy),
+                        ));
+                    }
+                }
+                if l > neigh + margin {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 }
