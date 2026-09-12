@@ -25,6 +25,7 @@ pub struct WallpaperEngine {
     parent: HWND,
     start: Instant,
     pub thunder_flash: f32,
+    pub thunder_seed: f32,
 }
 
 struct SurfaceSlot {
@@ -76,6 +77,7 @@ impl WallpaperEngine {
             parent,
             start: Instant::now(),
             thunder_flash: 0.0,
+            thunder_seed: 0.0,
         };
         engine.rebuild()?;
         Ok(engine)
@@ -147,8 +149,14 @@ impl WallpaperEngine {
             .collect();
         renderer.retain_sizes(&sizes);
         for slot in &self.slots {
-            let uniforms =
-                SkyUniforms::from_view(view, slot.width, slot.height, time, self.thunder_flash);
+            let uniforms = SkyUniforms::from_flash(
+                view,
+                slot.width,
+                slot.height,
+                time,
+                self.thunder_flash,
+                self.thunder_seed,
+            );
             renderer.write_uniforms(&self.queue, &uniforms);
             let frame = match slot.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame)

@@ -7,8 +7,8 @@
 
 use sky_core::{PrecipKind, SkyView, sun_dir_2d};
 
-const UNIFORM_SIZE: usize = 48;
-/// Overlay + lightning handoff; injected into both WGSL modules.
+const UNIFORM_SIZE: usize = 64;
+/// Overlay handoff; injected into both WGSL modules.
 const RAIN_OVERLAY_MIN: f32 = 0.02;
 
 fn wgsl_source(body: &str) -> String {
@@ -30,6 +30,8 @@ pub struct SkyUniforms {
     pub fog: f32,
     pub thunder: f32,
     pub season: f32,
+    pub thunder_seed: f32,
+    pub _pad: [f32; 3],
 }
 
 impl SkyUniforms {
@@ -39,6 +41,17 @@ impl SkyUniforms {
         height: u32,
         time: f32,
         thunder_flash: f32,
+    ) -> Self {
+        Self::from_flash(view, width, height, time, thunder_flash, 0.0)
+    }
+
+    pub fn from_flash(
+        view: &SkyView,
+        width: u32,
+        height: u32,
+        time: f32,
+        thunder_flash: f32,
+        thunder_seed: f32,
     ) -> Self {
         Self {
             sun_dir: sun_dir_2d(view.sun.altitude_deg),
@@ -53,6 +66,8 @@ impl SkyUniforms {
             fog: view.weather.fog,
             thunder: thunder_flash.clamp(0.0, 1.0),
             season: view.season.rem_euclid(1.0),
+            thunder_seed,
+            _pad: [0.0; 3],
         }
     }
 }
@@ -83,11 +98,7 @@ fn offscreen_extent(width: u32, height: u32) -> (u32, u32) {
     ((width.max(1) + 3) / 4, (height.max(1) + 3) / 4)
 }
 
-fn tex_view(
-    texture: &wgpu::Texture,
-    usage: wgpu::TextureUsages,
-    label: &str,
-) -> wgpu::TextureView {
+fn tex_view(texture: &wgpu::Texture, usage: wgpu::TextureUsages, label: &str) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some(label),
         format: None,
@@ -631,10 +642,50 @@ mod tests {
         };
         const W: u32 = 160;
         const H: u32 = 90;
-        let night = pixels(&device, &queue, -30.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
-        let twilight = pixels(&device, &queue, -6.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
-        let noon = pixels(&device, &queue, 70.0, 0.5, clear, 12.0, W, H, Frame::SkyOnly);
-        let cloudy = pixels(&device, &queue, -30.0, 0.5, overcast, 12.0, W, H, Frame::SkyOnly);
+        let night = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            clear,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let twilight = pixels(
+            &device,
+            &queue,
+            -6.0,
+            0.5,
+            clear,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let noon = pixels(
+            &device,
+            &queue,
+            70.0,
+            0.5,
+            clear,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let cloudy = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            overcast,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
         let night_peaks = isolated_peaks(&night, W, H, 0.12, 0.34);
         let twilight_peaks = isolated_peaks(&twilight, W, H, 0.12, 0.34);
         let noon_peaks = isolated_peaks(&noon, W, H, 0.12, 0.34);
@@ -654,6 +705,53 @@ mod tests {
         assert!(
             cloudy_peaks < night_peaks,
             "clouds should mute stars: cloudy={cloudy_peaks} night={night_peaks}"
+        );
+    }
+
+    #[test]
+    fn thunder_lights_cloud_gaps_not_a_bolt() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let storm = thunder_wx(0.95, 0.0);
+        let broken = thunder_wx(0.48, 0.0);
+        let rain = thunder_wx(0.95, 0.5);
+        const W: u32 = 160;
+        const H: u32 = 90;
+        let grab = |wx: SkyWeather, thunder: f32, frame: Frame| {
+            pixels_at(&device, &queue, -18.0, 0.5, wx, 8.4, W, H, frame, thunder)
+        };
+        let storm_off = grab(storm, 0.0, Frame::SkyOnly);
+        let storm_on = grab(storm, 1.0, Frame::SkyOnly);
+        let broken_off = grab(broken, 0.0, Frame::SkyOnly);
+        let broken_on = grab(broken, 1.0, Frame::SkyOnly);
+        let storm_d = band_luma(&storm_on, W, H) - band_luma(&storm_off, W, H);
+        let broken_d = band_luma(&broken_on, W, H) - band_luma(&broken_off, W, H);
+        assert!(
+            storm_d > 0.03,
+            "storm thunder should brighten the cloud deck, delta={storm_d:.4}"
+        );
+        assert!(
+            storm_d > broken_d + 0.015,
+            "thunder should light overcast more than a broken deck: storm={storm_d:.4} broken={broken_d:.4}"
+        );
+        let edges_off = sharp_edge_frac(&storm_off, W, H, 0.22);
+        let edges_on = sharp_edge_frac(&storm_on, W, H, 0.22);
+        assert!(
+            edges_on < edges_off + 0.012,
+            "sheet flash must not add a bolt-like edge: on={edges_on:.4} off={edges_off:.4}"
+        );
+
+        let rain_off = grab(rain, 0.0, Frame::Auto);
+        let rain_on = grab(rain, 1.0, Frame::Auto);
+        let rain_d = band_luma(&rain_on, W, H) - band_luma(&rain_off, W, H);
+        assert!(
+            rain_d > 0.02,
+            "thunder should still brighten a raining glass frame, delta={rain_d:.4}"
+        );
+        let rain_edges_off = sharp_edge_frac(&rain_off, W, H, 0.22);
+        let rain_edges_on = sharp_edge_frac(&rain_on, W, H, 0.22);
+        assert!(
+            rain_edges_on < rain_edges_off + 0.012,
+            "glass thunder must not add a bolt-like edge: on={rain_edges_on:.4} off={rain_edges_off:.4}"
         );
     }
 
@@ -945,6 +1043,17 @@ mod tests {
         );
     }
 
+    fn thunder_wx(cover: f32, precip: f32) -> SkyWeather {
+        SkyWeather {
+            code: WeatherCode(95),
+            cloud_cover: cover,
+            precip,
+            precip_kind: PrecipKind::Rain,
+            fog: 0.0,
+            thunder: true,
+        }
+    }
+
     fn rain_wx(code: u8, precip: f32, kind: PrecipKind) -> SkyWeather {
         SkyWeather {
             code: WeatherCode(code),
@@ -983,6 +1092,23 @@ mod tests {
         height: u32,
         frame: Frame,
     ) -> Vec<u8> {
+        pixels_at(
+            device, queue, alt_deg, season, weather, time, width, height, frame, 0.0,
+        )
+    }
+
+    fn pixels_at(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        alt_deg: f64,
+        season: f32,
+        weather: SkyWeather,
+        time: f32,
+        width: u32,
+        height: u32,
+        frame: Frame,
+        thunder: f32,
+    ) -> Vec<u8> {
         let w = width;
         let h = height;
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -994,7 +1120,7 @@ mod tests {
             weather,
             season,
         };
-        let mut uniforms = SkyUniforms::from_view(&view, w, h, time, 0.0);
+        let mut uniforms = SkyUniforms::from_flash(&view, w, h, time, thunder, 3.0);
         renderer.write_uniforms(queue, &uniforms);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky-rain-test"),
@@ -1132,5 +1258,52 @@ mod tests {
             }
         }
         n
+    }
+
+    fn band_luma(rgba: &[u8], width: u32, height: u32) -> f32 {
+        let y0 = (height as f32 * 0.18) as u32;
+        let y1 = (height as f32 * 0.62) as u32;
+        let mut acc = 0.0f32;
+        let mut n = 0.0f32;
+        for y in y0..y1.max(y0 + 1) {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                acc += luma([
+                    f32::from(rgba[i]) / 255.0,
+                    f32::from(rgba[i + 1]) / 255.0,
+                    f32::from(rgba[i + 2]) / 255.0,
+                ]);
+                n += 1.0;
+            }
+        }
+        acc / n.max(1.0)
+    }
+
+    fn sharp_edge_frac(rgba: &[u8], width: u32, height: u32, jump: f32) -> f32 {
+        let luma_at = |x: u32, y: u32| {
+            let i = ((y * width + x) * 4) as usize;
+            luma([
+                f32::from(rgba[i]) / 255.0,
+                f32::from(rgba[i + 1]) / 255.0,
+                f32::from(rgba[i + 2]) / 255.0,
+            ])
+        };
+        let mut sharp = 0.0f32;
+        let mut n = 0.0f32;
+        for y in 1..height - 1 {
+            for x in 1..width - 1 {
+                n += 1.0;
+                let l = luma_at(x, y);
+                let d = (l - luma_at(x + 1, y))
+                    .abs()
+                    .max((l - luma_at(x - 1, y)).abs())
+                    .max((l - luma_at(x, y + 1)).abs())
+                    .max((l - luma_at(x, y - 1)).abs());
+                if d > jump {
+                    sharp += 1.0;
+                }
+            }
+        }
+        sharp / n.max(1.0)
     }
 }

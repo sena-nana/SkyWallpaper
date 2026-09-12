@@ -8,6 +8,10 @@ struct Uniforms {
     fog: f32,
     thunder: f32,
     season: f32,
+    thunder_seed: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -386,6 +390,31 @@ fn clouds(uv: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(dens, n1 * 0.62 + n2 * 0.38);
 }
 
+fn sheet_lightning(uv: vec2<f32>, dens: f32, mesh: MeshLayout) -> f32 {
+    let cover = clamp(u.cloud_cover, 0.0, 1.0);
+    if (u.thunder < 0.02 || cover < 0.12 || dens < 0.02) {
+        return 0.0;
+    }
+    let aspect = u.resolution.x / max(u.resolution.y, 1.0);
+    let h = hash22(vec2<f32>(u.thunder_seed, 3.1));
+    var origin = mix(mesh.well, mix(mesh.mid, mesh.cool, step(0.5, h.y)), 0.30 + 0.45 * h.x);
+    origin += (h - 0.5) * 0.16;
+    let delta = (uv - origin) * vec2<f32>(aspect * 0.58, 1.0);
+    let masses = max(
+        blob_w(uv, mesh.well, mesh.well_r),
+        max(
+            blob_w(uv, mesh.mid, vec2<f32>(0.52, 0.46)),
+            blob_w(uv, mesh.cool, vec2<f32>(0.88, 0.78)),
+        ),
+    );
+    let rim = 4.0 * masses * (1.0 - masses);
+    let in_cloud = smoothstep(0.02, 0.18, dens);
+    let glow = exp(-dot(delta, delta) * 12.0) * (rim + dens * 0.35) * in_cloud;
+    let pop = hash21(vec2<f32>(floor(u.time * 28.0), 4.2));
+    let crackle = mix(1.0, 0.78 + 0.22 * pop, smoothstep(0.2, 1.0, u.thunder));
+    return glow * u.thunder * crackle;
+}
+
 fn snow(uv: vec2<f32>) -> f32 {
     let amt = u.precip * u.precip_kind;
     if (amt <= 0.0) {
@@ -427,21 +456,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let cloud_col = cloud_color(look, stops, sun.y, sky_uv, mesh.well, cld.y);
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
     col = mix(col, cloud_col, cld.x * mix(0.80, 0.94, cover));
-    col += cloud_col * cld.x * u.thunder * 1.8;
+    let flash = sheet_lightning(sky_uv, cld.x, mesh) * cld.x;
+    col += mix(cloud_col, vec3<f32>(0.80, 0.87, 1.0), mix(0.40, 0.18, day))
+        * flash
+        * mix(2.2, 1.4, day);
 
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
-    let rain = u.precip * (1.0 - u.precip_kind);
-    if (rain <= RAIN_OVERLAY_MIN) {
-        col += lightning_rgb(uv, u.thunder);
-    }
 
     let fog_amt = sky_fog_amt(uv, u.fog);
     let fog_col = mix(mix(look, stops.horizon, 0.4), vec3<f32>(luma3(look)), 0.16)
         * mix(0.92, 1.06, day);
     col = mix(col, fog_col, fog_amt);
-
-    col += vec3<f32>(u.thunder * 0.12);
     col += (hash21(in.pos.xy) - 0.5) * 0.004;
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(col, 1.0);

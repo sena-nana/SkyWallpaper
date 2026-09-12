@@ -77,6 +77,7 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         let weather = state.effective_weather();
         if weather.thunder && engine.thunder_flash < 0.05 && hash_time(engine.elapsed()) < 0.01 {
             engine.thunder_flash = 1.0;
+            engine.thunder_seed = engine.elapsed();
         }
         engine.thunder_flash *= 0.84;
 

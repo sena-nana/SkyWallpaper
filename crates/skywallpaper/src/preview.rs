@@ -35,6 +35,7 @@ struct PreviewApp {
     gpu: Option<Gpu>,
     start: Instant,
     thunder: f32,
+    thunder_seed: f32,
     anim_hold: Option<f32>,
     debug_cache: Option<DebugParams>,
     debug_mtime: Option<SystemTime>,
@@ -55,6 +56,7 @@ pub fn run(mut opts: PreviewOpts) -> anyhow::Result<()> {
         gpu: None,
         start: Instant::now(),
         thunder: 0.0,
+        thunder_seed: 0.0,
         anim_hold: None,
         debug_cache,
         debug_mtime: None,
@@ -163,17 +165,23 @@ impl PreviewApp {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
-        let (view, time, thunder) = if let Some(params) = debug {
+        let (view, time, thunder, thunder_seed) = if let Some(params) = debug {
             let time = if params.anim_paused {
                 *self.anim_hold.get_or_insert(elapsed)
             } else {
                 self.anim_hold = None;
                 elapsed
             };
-            (params.build_view(), time, params.thunder.clamp(0.0, 1.0))
+            (
+                params.build_view(),
+                time,
+                params.thunder.clamp(0.0, 1.0),
+                0.0,
+            )
         } else {
-            if self.opts.weather.thunder && fastrand(elapsed) < 0.008 {
+            if self.opts.weather.thunder && self.thunder < 0.05 && fastrand(elapsed) < 0.008 {
                 self.thunder = 1.0;
+                self.thunder_seed = elapsed;
             }
             self.thunder *= 0.82;
             self.anim_hold = None;
@@ -181,10 +189,17 @@ impl PreviewApp {
                 SkyView::now(self.opts.latitude, self.opts.longitude, self.opts.weather),
                 elapsed,
                 self.thunder,
+                self.thunder_seed,
             )
         };
-        let uniforms =
-            SkyUniforms::from_view(&view, gpu.config.width, gpu.config.height, time, thunder);
+        let uniforms = SkyUniforms::from_flash(
+            &view,
+            gpu.config.width,
+            gpu.config.height,
+            time,
+            thunder,
+            thunder_seed,
+        );
         gpu.renderer
             .retain_sizes(&[(gpu.config.width, gpu.config.height)]);
         gpu.renderer.write_uniforms(&gpu.queue, &uniforms);

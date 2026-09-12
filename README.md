@@ -44,7 +44,7 @@ cargo debug
 
 ## 天空模型
 
-画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨是全屏玻璃雨点（天空以 1/4 分辨率离屏，再全屏折射合成；小雨朦胧+凝结小滴，大雨沿玻璃流下），另有轻量雪、雾、闪电。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
+画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨是全屏玻璃雨点（天空以 1/4 分辨率离屏，再全屏折射合成；小雨朦胧+凝结小滴，大雨沿玻璃流下），另有轻量雪、雾、云间闪光。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
 
 ## 许可
 
