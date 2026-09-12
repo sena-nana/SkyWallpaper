@@ -16,13 +16,10 @@ use nana_ui::{
 };
 use nana_ui_platform::WindowId;
 use serde::{Deserialize, Serialize};
-use sky_core::{PrecipKind, SkyView, SkyWeather, WeatherCode, enu_from_alt_az};
+use sky_core::{PrecipKind, SkyView, SkyWeather, WeatherCode};
 
 use crate::config::LanguagePref;
 use crate::i18n::Lang;
-
-/// Uniform scalars that affect the picture, excluding `resolution` (2).
-pub const TUNABLE_COUNT: usize = 12;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DebugParams {
@@ -32,16 +29,12 @@ pub struct DebugParams {
     pub hour: f32,
     pub override_sun: bool,
     pub sun_alt: f32,
-    pub sun_az: f32,
     pub anim_paused: bool,
     pub cloud_cover: f32,
     pub precip: f32,
     pub snow: bool,
     pub fog: f32,
     pub thunder: f32,
-    pub cam_pitch: f32,
-    pub cam_yaw: f32,
-    pub exposure: f32,
 }
 
 impl DebugParams {
@@ -54,16 +47,12 @@ impl DebugParams {
             hour: local_hour(Local::now()),
             override_sun: false,
             sun_alt: view.sun.altitude_deg as f32,
-            sun_az: view.sun.azimuth_deg as f32,
             anim_paused: false,
             cloud_cover: weather.cloud_cover,
             precip: weather.precip,
             snow: weather.precip_kind == PrecipKind::Snow,
             fog: weather.fog,
             thunder: if weather.thunder { 0.7 } else { 0.0 },
-            cam_pitch: view.cam_pitch_deg,
-            cam_yaw: view.cam_yaw_deg,
-            exposure: view.exposure,
         }
     }
 
@@ -96,15 +85,8 @@ impl DebugParams {
         };
         let mut view = SkyView::at(self.latitude, self.longitude, utc, weather);
         if self.override_sun {
-            let alt = f64::from(self.sun_alt);
-            let az = f64::from(self.sun_az);
-            view.sun.altitude_deg = alt;
-            view.sun.azimuth_deg = az;
-            view.sun.dir_enu = enu_from_alt_az(alt, az);
+            view.sun.altitude_deg = f64::from(self.sun_alt);
         }
-        view.cam_pitch_deg = self.cam_pitch;
-        view.cam_yaw_deg = self.cam_yaw;
-        view.exposure = self.exposure;
         view
     }
 
@@ -122,7 +104,7 @@ impl DebugParams {
 
     fn summary(&self) -> String {
         format!(
-            "{TUNABLE_COUNT} knobs  hour={:.1}  cloud={:.0}%  precip={:.0}%",
+            "hour={:.1}  cloud={:.0}%  precip={:.0}%",
             self.hour,
             self.cloud_cover * 100.0,
             self.precip * 100.0
@@ -133,14 +115,10 @@ impl DebugParams {
         match k {
             Knob::Hour => self.hour,
             Knob::Alt => self.sun_alt,
-            Knob::Az => self.sun_az,
             Knob::Cloud => self.cloud_cover,
             Knob::Precip => self.precip,
             Knob::Fog => self.fog,
             Knob::Thunder => self.thunder,
-            Knob::Pitch => self.cam_pitch,
-            Knob::Yaw => self.cam_yaw,
-            Knob::Exposure => self.exposure,
         }
     }
 
@@ -154,17 +132,10 @@ impl DebugParams {
                 self.override_sun = true;
                 self.sun_alt = value;
             }
-            Knob::Az => {
-                self.override_sun = true;
-                self.sun_az = value;
-            }
             Knob::Cloud => self.cloud_cover = value,
             Knob::Precip => self.precip = value,
             Knob::Fog => self.fog = value,
             Knob::Thunder => self.thunder = value,
-            Knob::Pitch => self.cam_pitch = value,
-            Knob::Yaw => self.cam_yaw = value,
-            Knob::Exposure => self.exposure = value,
         }
     }
 }
@@ -208,42 +179,30 @@ fn utc_for_local_hour(hour: f32) -> DateTime<Utc> {
 enum Knob {
     Hour,
     Alt,
-    Az,
     Cloud,
     Precip,
     Fog,
     Thunder,
-    Pitch,
-    Yaw,
-    Exposure,
 }
 
 impl Knob {
-    const ALL: [Knob; 10] = [
+    const ALL: [Knob; 6] = [
         Knob::Hour,
         Knob::Alt,
-        Knob::Az,
         Knob::Cloud,
         Knob::Precip,
         Knob::Fog,
         Knob::Thunder,
-        Knob::Pitch,
-        Knob::Yaw,
-        Knob::Exposure,
     ];
 
     fn spec(self, zh: bool) -> (&'static str, f32, f32, f32, &'static str) {
         let (id, min, max, step, en, z) = match self {
             Knob::Hour => ("hour", 0.0, 24.0, 0.05, "Hour", "时刻"),
             Knob::Alt => ("alt", -90.0, 90.0, 0.5, "Sun alt", "太阳高度"),
-            Knob::Az => ("az", 0.0, 360.0, 1.0, "Sun az", "太阳方位"),
             Knob::Cloud => ("cloud", 0.0, 1.0, 0.01, "Cloud", "云量"),
             Knob::Precip => ("precip", 0.0, 1.0, 0.01, "Precip", "降水"),
             Knob::Fog => ("fog", 0.0, 1.0, 0.01, "Fog", "雾"),
             Knob::Thunder => ("thunder", 0.0, 1.0, 0.01, "Thunder", "雷电"),
-            Knob::Pitch => ("pitch", -15.0, 80.0, 0.5, "Pitch", "俯仰"),
-            Knob::Yaw => ("yaw", 0.0, 360.0, 1.0, "Yaw", "方位"),
-            Knob::Exposure => ("exp", 0.2, 3.0, 0.01, "Exposure", "曝光"),
         };
         (id, min, max, step, if zh { z } else { en })
     }
@@ -280,7 +239,7 @@ enum Message {
 #[derive(Clone, Copy)]
 struct Widgets {
     summary: Entity<Text>,
-    knobs: [Entity<RangeField>; 10],
+    knobs: [Entity<RangeField>; 6],
     live: Entity<Checkbox>,
     pause: Entity<Checkbox>,
     override_sun: Entity<Checkbox>,
@@ -299,7 +258,7 @@ pub fn run(params: Arc<Mutex<DebugParams>>, persist: Option<PathBuf>) -> anyhow:
     let title = panel_title();
     let result = run_runtime::<RuntimeApplication<DebugPanel>>(
         RuntimeWindowSettings::new(title)
-            .initial_size(480.0, 800.0)
+            .initial_size(480.0, 640.0)
             .minimum_size(360.0, 480.0),
     );
     *LAUNCH.lock().unwrap() = None;
@@ -347,7 +306,7 @@ impl ApplicationState for DebugPanel {
                 );
                 let snow = ui.child("snow", Checkbox::new(t(zh, "雪", "Snow"), p.snow));
 
-                let mut knobs: [Option<Entity<RangeField>>; 10] = [None; 10];
+                let mut knobs: [Option<Entity<RangeField>>; 6] = [None; 6];
                 for (i, knob) in Knob::ALL.into_iter().enumerate() {
                     let (id, min, max, step, label) = knob.spec(zh);
                     let field = ui.child(id, slider(p.knob(knob), min, max, step, label));
@@ -420,7 +379,6 @@ impl ApplicationState for DebugPanel {
                     if on && !p.override_sun {
                         let view = p.build_view();
                         p.sun_alt = view.sun.altitude_deg as f32;
-                        p.sun_az = view.sun.azimuth_deg as f32;
                     }
                     p.override_sun = on;
                 }
@@ -484,6 +442,7 @@ fn slider(value: f32, min: f32, max: f32, step: f32, label: &str) -> RangeField 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sky_core::sun_dir_2d;
     use sky_gpu::SkyUniforms;
 
     fn params() -> DebugParams {
@@ -506,19 +465,17 @@ mod tests {
     #[test]
     fn knobs_reach_uniforms() {
         let mut p = params();
-        p.cam_pitch = 42.0;
         p.cloud_cover = 0.8;
         p.override_sun = true;
         p.sun_alt = 45.0;
-        p.sun_az = 90.0;
         let view = p.build_view();
         let u = SkyUniforms::from_view(&view, 1280, 720, 1.0, p.thunder);
-        assert!((u.cam_pitch - 42.0).abs() < 1e-4);
         assert!((u.cloud_cover - 0.8).abs() < 1e-4);
-        let expected = enu_from_alt_az(45.0, 90.0);
-        for i in 0..3 {
-            assert!((view.sun.dir_enu[i] - expected[i]).abs() < 1e-5);
+        let expected = sun_dir_2d(45.0);
+        for (got, want) in u.sun_dir.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-5);
         }
+        assert_eq!(u.sun_dir[2], 0.0);
     }
 
     #[test]

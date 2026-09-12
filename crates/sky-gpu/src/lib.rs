@@ -5,9 +5,9 @@
 //! https://www.shadertoy.com/view/slSXRW) as implemented in
 //! [dnlzro/horizon](https://github.com/dnlzro/horizon) `src/gradient.ts`.
 
-use sky_core::{PrecipKind, SkyView};
+use sky_core::{PrecipKind, SkyView, sun_dir_2d};
 
-const UNIFORM_SIZE: usize = 64;
+const UNIFORM_SIZE: usize = 48;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -20,10 +20,7 @@ pub struct SkyUniforms {
     pub precip_kind: f32,
     pub fog: f32,
     pub thunder: f32,
-    pub cam_pitch: f32,
-    pub cam_yaw: f32,
-    pub exposure: f32,
-    pub _pad: [f32; 2],
+    pub _pad: f32,
 }
 
 impl SkyUniforms {
@@ -35,7 +32,7 @@ impl SkyUniforms {
         thunder_flash: f32,
     ) -> Self {
         Self {
-            sun_dir: view.sun.dir_enu,
+            sun_dir: sun_dir_2d(view.sun.altitude_deg),
             time,
             resolution: [width as f32, height as f32],
             cloud_cover: view.weather.cloud_cover,
@@ -46,10 +43,7 @@ impl SkyUniforms {
             },
             fog: view.weather.fog,
             thunder: thunder_flash.clamp(0.0, 1.0),
-            cam_pitch: view.cam_pitch_deg,
-            cam_yaw: view.cam_yaw_deg,
-            exposure: view.exposure,
-            _pad: [0.0; 2],
+            _pad: 0.0,
         }
     }
 }

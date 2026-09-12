@@ -7,19 +7,16 @@ struct Uniforms {
     precip_kind: f32,
     fog: f32,
     thunder: f32,
-    cam_pitch: f32,
-    cam_yaw: f32,
-    exposure: f32,
     _pad0: f32,
-    _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 // Atmosphere: Hillaire 2020 coefficients via Andrew Helmer "Production Sky
 // Rendering" (https://www.shadertoy.com/view/slSXRW, MIT) as ported in
-// dnlzro/horizon `src/gradient.ts` (MIT). 2D view rays; not the CSS 1D gradient.
+// dnlzro/horizon `src/gradient.ts` (MIT).
 const PI: f32 = 3.141592653589793;
+const FOV_DEG: f32 = 75.0;
 const RAYLEIGH_SCATTER: vec3<f32> = vec3<f32>(5.802e-6, 13.558e-6, 33.1e-6);
 const MIE_SCATTER: f32 = 3.996e-6;
 const MIE_ABSORB: f32 = 4.44e-6;
@@ -137,13 +134,8 @@ fn atmosphere(rd: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
     var t_ray = segment * 0.5;
     var inscattered = vec3<f32>(0.0);
 
-    let origin_radius = length(ray_origin);
-    let pointing_down = dot(ray_origin, rd) / origin_radius < 0.0;
-    let start_height = origin_radius - GROUND_RADIUS;
-    let start_up = ray_origin / origin_radius;
-    let start_ray_cos = clamp(dot(start_up, rd), -1.0, 1.0);
-    let start_ray_angle = acos(abs(start_ray_cos));
-    let transmittance_camera_to_space = compute_transmittance(start_height, start_ray_angle);
+    let start_ray_angle = acos(abs(clamp(rd.y, -1.0, 1.0)));
+    let transmittance_camera_to_space = compute_transmittance(0.0, start_ray_angle);
 
     for (var i = 0; i < VIEW_STEPS; i = i + 1) {
         let sample_pos = ray_origin + rd * t_ray;
@@ -157,12 +149,8 @@ fn atmosphere(rd: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
         let sun_angle = acos(sun_cos);
 
         let transmittance_to_space = compute_transmittance(sample_height, view_angle);
-        var transmittance_camera_to_sample: vec3<f32>;
-        if (pointing_down) {
-            transmittance_camera_to_sample = transmittance_to_space / max(transmittance_camera_to_space, vec3<f32>(1e-6));
-        } else {
-            transmittance_camera_to_sample = transmittance_camera_to_space / max(transmittance_to_space, vec3<f32>(1e-6));
-        }
+        let transmittance_camera_to_sample =
+            transmittance_camera_to_space / max(transmittance_to_space, vec3<f32>(1e-6));
         let transmittance_light = compute_transmittance(sample_height, sun_angle);
 
         let density_r = exp(-sample_height / RAYLEIGH_SCALE_HEIGHT);
@@ -188,27 +176,18 @@ fn sunset_bias(color: vec3<f32>) -> vec3<f32> {
     return max(color * vec3<f32>(rb, gb, bb), vec3<f32>(0.0));
 }
 
-fn look_dir(uv: vec2<f32>) -> vec3<f32> {
-    let aspect = u.resolution.x / max(u.resolution.y, 1.0);
-    let fov = 1.15;
-    let px = (uv.x * 2.0 - 1.0) * aspect * fov;
-    let py = (uv.y * 2.0 - 1.0) * fov;
-    let pitch = u.cam_pitch * PI / 180.0;
-    let yaw = u.cam_yaw * PI / 180.0;
-    // ENU: x east, y up, z north. Yaw from north clockwise.
-    let forward = vec3<f32>(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch));
-    let world_up = vec3<f32>(0.0, 1.0, 0.0);
-    let right = normalize(cross(forward, world_up));
-    let up = cross(right, forward);
-    return normalize(forward + right * px + up * py);
+// Horizon view ray: s=0 at the horizon (bottom), s=1 toward mid-sky (top).
+fn view_dir(s: f32) -> vec3<f32> {
+    let focal_z = 1.0 / tan(FOV_DEG * 0.5 * PI / 180.0);
+    return normalize(vec3<f32>(0.0, s, focal_z));
 }
 
-fn stars(rd: vec3<f32>, night: f32) -> vec3<f32> {
+fn stars(uv: vec2<f32>, night: f32) -> vec3<f32> {
     if (night <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let n = floor(rd * 140.0);
-    let h = hash21(n.xy + n.z * 17.0);
+    let n = floor(uv * vec2<f32>(96.0, 54.0));
+    let h = hash21(n);
     let spark = smoothstep(0.9972, 1.0, h);
     let twinkle = 0.7 + 0.3 * sin(u.time * (1.5 + h * 3.0) + h * 20.0);
     return vec3<f32>(spark * twinkle * night);
@@ -228,17 +207,16 @@ fn weather_grade(col: vec3<f32>, sun_y: f32) -> vec3<f32> {
     return out;
 }
 
-fn clouds(rd: vec3<f32>) -> f32 {
-    if (rd.y < 0.02) {
-        return 0.0;
-    }
+fn clouds(uv: vec2<f32>) -> f32 {
     let t = u.time * 0.012;
-    let p1 = rd.xz / max(rd.y, 0.08) * 0.35 + vec2<f32>(t, t * 0.35);
-    let p2 = rd.xz / max(rd.y, 0.08) * 0.9 + vec2<f32>(t * 1.4, -t * 0.2);
+    let y = max(uv.y, 0.08);
+    let p1 = vec2<f32>(uv.x * 2.0, 1.0 / y) * 0.35 + vec2<f32>(t, t * 0.35);
+    let p2 = vec2<f32>(uv.x * 2.0, 1.0 / y) * 0.9 + vec2<f32>(t * 1.4, -t * 0.2);
     let n = fbm(p1) * 0.65 + fbm(p2) * 0.35;
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
     let threshold = mix(0.72, 0.18, cover);
-    return smoothstep(threshold, threshold + 0.28, n) * mix(0.15, 1.0, cover);
+    let fade = smoothstep(0.0, 0.08, uv.y);
+    return smoothstep(threshold, threshold + 0.28, n) * mix(0.15, 1.0, cover) * fade;
 }
 
 fn rain(uv: vec2<f32>) -> f32 {
@@ -302,23 +280,21 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = clip.xy / u.resolution;
-    var rd = look_dir(vec2<f32>(uv.x, 1.0 - uv.y));
-    if (rd.y < -0.02) {
-        rd = normalize(vec3<f32>(rd.x, abs(rd.y) * 0.15 + 0.001, rd.z));
-    }
+    let sky_uv = vec2<f32>(uv.x, 1.0 - uv.y);
+    let rd = view_dir(sky_uv.y);
 
     let sun = normalize(u.sun_dir);
     var col = atmosphere(rd, sun);
-    col *= HORIZON_EXPOSURE * u.exposure;
+    col *= HORIZON_EXPOSURE;
     col = sunset_bias(col);
     col = weather_grade(col, sun.y);
 
     let night = smoothstep(0.15, -0.12, sun.y);
-    col += stars(rd, night * (1.0 - u.cloud_cover * 0.85));
+    col += stars(sky_uv, night * (1.0 - u.cloud_cover * 0.85));
 
-    let cld = clouds(rd);
+    let cld = clouds(sky_uv);
     let cloud_lit = mix(vec3<f32>(0.15, 0.17, 0.22), vec3<f32>(0.95, 0.93, 0.9), clamp(sun.y * 0.8 + 0.35, 0.0, 1.0));
-    let sunset = pow(max(dot(rd, sun), 0.0), 8.0) * smoothstep(0.35, -0.05, sun.y) * smoothstep(-0.25, 0.05, sun.y);
+    let sunset = (1.0 - rd.y) * smoothstep(0.35, -0.05, sun.y) * smoothstep(-0.25, 0.05, sun.y);
     let cloud_col = mix(cloud_lit, vec3<f32>(1.0, 0.45, 0.2), sunset * 0.8);
     col = mix(col, cloud_col, cld * 0.88);
     col += cloud_col * cld * u.thunder * 1.8;

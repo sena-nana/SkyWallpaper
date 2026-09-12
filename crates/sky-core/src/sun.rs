@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 
-use crate::{cosd, equatorial_to_altaz, julian_centuries, julian_date, local_sidereal_deg, sind, wrap_deg};
+use crate::{
+    cosd, julian_centuries, julian_date, local_sidereal_deg, sind, solar_altitude_deg, wrap_deg,
+};
 
-/// Apparent solar position at the observer.
+/// Apparent solar altitude at the observer.
 #[derive(Debug, Clone, Copy)]
 pub struct SunState {
     pub altitude_deg: f64,
-    pub azimuth_deg: f64,
-    pub dir_enu: [f32; 3],
 }
 
 impl SunState {
@@ -25,18 +25,12 @@ impl SunState {
         let lambda = true_long - 0.00569 - 0.00478 * sind(omega);
         let eps0 = 23.439291 - 0.0130042 * t - 0.00000016 * t * t + 0.000000504 * t * t * t;
         let eps = eps0 + 0.00256 * cosd(omega);
-        let ra = wrap_deg(
-            (cosd(eps) * sind(lambda)).atan2(cosd(lambda)) * crate::RAD,
-        );
+        let ra = wrap_deg((cosd(eps) * sind(lambda)).atan2(cosd(lambda)) * crate::RAD);
         let dec = (sind(eps) * sind(lambda)).asin() * crate::RAD;
-
         let lst = local_sidereal_deg(jd, longitude_deg);
-        let (altitude, azimuth) = equatorial_to_altaz(ra, dec, lst, latitude_deg);
 
         Self {
-            altitude_deg: altitude,
-            azimuth_deg: azimuth,
-            dir_enu: crate::enu_from_alt_az(altitude, azimuth),
+            altitude_deg: solar_altitude_deg(ra, dec, lst, latitude_deg),
         }
     }
 }

@@ -29,7 +29,7 @@ cargo preview --weather rain --lat 39.9 --lon 116.4
 cargo debug
 ```
 
-预览窗 + 滑块面板。去掉分辨率后 12 个 uniform 可调；关掉预览即结束。
+预览窗 + 滑块面板。时刻、太阳高度、天气可调；关掉预览即结束。
 
 ## 行为
 
@@ -44,7 +44,7 @@ cargo debug
 
 ## 天空模型
 
-大气底色采用 Sébastien Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*（2020）的介质系数与单次散射，实现源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW)（MIT），并由 [dnlzro/horizon](https://github.com/dnlzro/horizon) 的 `src/gradient.ts` 整理。本仓库把它搬进 2D WGSL（太阳方向只作散射光源，不画日盘），天气用色调与轻量雨雪雾电叠加。不是网页那条 CSS 线性渐变。
+大气底色采用 Sébastien Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*（2020）的介质系数与单次散射，实现源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW)（MIT），并由 [dnlzro/horizon](https://github.com/dnlzro/horizon) 的 `src/gradient.ts` 整理。本仓库把它搬进 2D WGSL：竖向切片（地平线在底），太阳只用高度角，不画日盘。天气用色调与轻量雨雪雾电叠加。不是网页那条 CSS 线性渐变。
 
 ## 许可
 

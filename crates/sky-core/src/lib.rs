@@ -11,13 +11,12 @@ use chrono::{DateTime, Utc};
 const DEG: f64 = std::f64::consts::PI / 180.0;
 const RAD: f64 = 180.0 / std::f64::consts::PI;
 
-/// Julian Date from a UTC instant (UTC, not TT; enough for sky wallpaper).
-pub fn julian_date(utc: DateTime<Utc>) -> f64 {
+fn julian_date(utc: DateTime<Utc>) -> f64 {
     let seconds = utc.timestamp_millis() as f64 / 1000.0;
     seconds / 86_400.0 + 2_440_587.5
 }
 
-pub fn julian_centuries(jd: f64) -> f64 {
+fn julian_centuries(jd: f64) -> f64 {
     (jd - 2_451_545.0) / 36_525.0
 }
 
@@ -36,52 +35,29 @@ fn cosd(deg: f64) -> f64 {
     (deg * DEG).cos()
 }
 
-/// Local mean sidereal time in degrees.
-pub fn local_sidereal_deg(jd: f64, longitude_deg: f64) -> f64 {
+fn local_sidereal_deg(jd: f64, longitude_deg: f64) -> f64 {
     let d = jd - 2_451_545.0;
     let gmst = wrap_deg(280.46061837 + 360.98564736629 * d);
     wrap_deg(gmst + longitude_deg)
 }
 
-/// East, Up, North unit vector from altitude (deg) and azimuth (deg from north, clockwise).
-pub fn enu_from_alt_az(altitude_deg: f64, azimuth_deg: f64) -> [f32; 3] {
+/// Horizon sun in the 2D sky plane: `[cos(alt), sin(alt), 0]`.
+pub fn sun_dir_2d(altitude_deg: f64) -> [f32; 3] {
     let alt = altitude_deg * DEG;
-    let az = azimuth_deg * DEG;
-    let east = az.sin() * alt.cos();
-    let up = alt.sin();
-    let north = az.cos() * alt.cos();
-    [east as f32, up as f32, north as f32]
+    [alt.cos() as f32, alt.sin() as f32, 0.0]
 }
 
-fn equatorial_to_altaz(
-    ra_deg: f64,
-    dec_deg: f64,
-    lst_deg: f64,
-    latitude_deg: f64,
-) -> (f64, f64) {
+fn solar_altitude_deg(ra_deg: f64, dec_deg: f64, lst_deg: f64, latitude_deg: f64) -> f64 {
     let ha = wrap_deg(lst_deg - ra_deg);
     let sin_alt = sind(latitude_deg) * sind(dec_deg) + cosd(latitude_deg) * cosd(dec_deg) * cosd(ha);
-    let altitude = sin_alt.clamp(-1.0, 1.0).asin() * RAD;
-    let y = sind(ha);
-    let x = cosd(ha) * sind(latitude_deg) - tand(dec_deg) * cosd(latitude_deg);
-    let azimuth = wrap_deg(y.atan2(x) * RAD + 180.0);
-    (altitude, azimuth)
-}
-
-fn tand(deg: f64) -> f64 {
-    (deg * DEG).tan()
+    sin_alt.clamp(-1.0, 1.0).asin() * RAD
 }
 
 /// Combined observer sky for one frame.
 #[derive(Debug, Clone)]
 pub struct SkyView {
     pub sun: SunState,
-    pub latitude_deg: f64,
-    pub longitude_deg: f64,
     pub weather: SkyWeather,
-    pub cam_pitch_deg: f32,
-    pub cam_yaw_deg: f32,
-    pub exposure: f32,
 }
 
 impl SkyView {
@@ -91,24 +67,9 @@ impl SkyView {
         utc: DateTime<Utc>,
         weather: SkyWeather,
     ) -> Self {
-        let sun = SunState::at(latitude_deg, longitude_deg, utc);
-        let mut exposure = 1.0;
-        if sun.altitude_deg < -6.0 {
-            exposure = 1.35;
-        } else if sun.altitude_deg < 0.0 {
-            exposure = 1.15;
-        }
-        if weather.fog > 0.4 {
-            exposure *= 0.92;
-        }
         Self {
-            sun,
-            latitude_deg,
-            longitude_deg,
+            sun: SunState::at(latitude_deg, longitude_deg, utc),
             weather,
-            cam_pitch_deg: 18.0,
-            cam_yaw_deg: sun.azimuth_deg as f32,
-            exposure,
         }
     }
 
@@ -181,5 +142,17 @@ mod tests {
         assert!(!w.thunder);
         assert_eq!(w.precip, 0.0);
         assert!(w.cloud_cover < 0.25);
+    }
+
+    #[test]
+    fn sun_dir_2d_is_altitude_only() {
+        let horizon = sun_dir_2d(0.0);
+        assert!((horizon[0] - 1.0).abs() < 1e-5);
+        assert!(horizon[1].abs() < 1e-5);
+        assert_eq!(horizon[2], 0.0);
+        let zenith = sun_dir_2d(90.0);
+        assert!(zenith[0].abs() < 1e-5);
+        assert!((zenith[1] - 1.0).abs() < 1e-5);
+        assert_eq!(zenith[2], 0.0);
     }
 }
