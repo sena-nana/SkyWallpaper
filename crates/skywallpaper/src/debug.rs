@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use nana_ui::runtime::{
     Activate, Button, Checkbox, Entity, FrameworkError, RangeChanged, RangeField, Text,
     ToggleChanged,
@@ -16,7 +16,7 @@ use nana_ui::{
 };
 use nana_ui_platform::WindowId;
 use serde::{Deserialize, Serialize};
-use sky_core::{PrecipKind, SkyView, SkyWeather, WeatherCode};
+use sky_core::{PrecipKind, SkyView, SkyWeather, WeatherCode, date_for_season, season_from_utc};
 
 use crate::config::LanguagePref;
 use crate::i18n::Lang;
@@ -27,8 +27,8 @@ pub struct DebugParams {
     pub longitude: f64,
     pub live_clock: bool,
     pub hour: f32,
-    pub override_sun: bool,
-    pub sun_alt: f32,
+    #[serde(default)]
+    pub season: f32,
     pub anim_paused: bool,
     pub cloud_cover: f32,
     pub precip: f32,
@@ -39,14 +39,12 @@ pub struct DebugParams {
 
 impl DebugParams {
     pub fn from_live(latitude: f64, longitude: f64, weather: SkyWeather) -> Self {
-        let view = SkyView::now(latitude, longitude, weather);
         Self {
             latitude,
             longitude,
             live_clock: true,
             hour: local_hour(Local::now()),
-            override_sun: false,
-            sun_alt: view.sun.altitude_deg as f32,
+            season: season_from_utc(Utc::now(), latitude),
             anim_paused: false,
             cloud_cover: weather.cloud_cover,
             precip: weather.precip,
@@ -69,7 +67,7 @@ impl DebugParams {
         let utc = if self.live_clock {
             Utc::now()
         } else {
-            utc_for_local_hour(self.hour)
+            utc_for_local(self.hour, self.season, self.latitude)
         };
         let weather = SkyWeather {
             code: WeatherCode(0),
@@ -83,11 +81,7 @@ impl DebugParams {
             fog: self.fog.clamp(0.0, 1.0),
             thunder: self.thunder > 0.05,
         };
-        let mut view = SkyView::at(self.latitude, self.longitude, utc, weather);
-        if self.override_sun {
-            view.sun.altitude_deg = f64::from(self.sun_alt);
-        }
-        view
+        SkyView::at(self.latitude, self.longitude, utc, weather)
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -104,8 +98,9 @@ impl DebugParams {
 
     fn summary(&self) -> String {
         format!(
-            "hour={:.1}  cloud={:.0}%  precip={:.0}%",
+            "hour={:.1}  season={:.2}  cloud={:.0}%  precip={:.0}%",
             self.hour,
+            self.season,
             self.cloud_cover * 100.0,
             self.precip * 100.0
         )
@@ -114,7 +109,7 @@ impl DebugParams {
     fn knob(&self, k: Knob) -> f32 {
         match k {
             Knob::Hour => self.hour,
-            Knob::Alt => self.sun_alt,
+            Knob::Season => self.season,
             Knob::Cloud => self.cloud_cover,
             Knob::Precip => self.precip,
             Knob::Fog => self.fog,
@@ -128,9 +123,9 @@ impl DebugParams {
                 self.live_clock = false;
                 self.hour = value;
             }
-            Knob::Alt => {
-                self.override_sun = true;
-                self.sun_alt = value;
+            Knob::Season => {
+                self.live_clock = false;
+                self.season = value.rem_euclid(1.0);
             }
             Knob::Cloud => self.cloud_cover = value,
             Knob::Precip => self.precip = value,
@@ -156,29 +151,42 @@ fn local_hour(now: DateTime<Local>) -> f32 {
     now.hour() as f32 + now.minute() as f32 / 60.0 + now.second() as f32 / 3600.0
 }
 
-fn utc_for_local_hour(hour: f32) -> DateTime<Utc> {
+fn utc_for_local(hour: f32, season: f32, latitude: f64) -> DateTime<Utc> {
     let total = (hour.clamp(0.0, 24.0) * 3600.0).round() as i64;
     let total = total.clamp(0, 24 * 3600 - 1);
     let h = (total / 3600) as u32;
     let m = ((total % 3600) / 60) as u32;
     let s = (total % 60) as u32;
-    let now = Local::now();
-    let naive = now
-        .date_naive()
+    let date = date_for_season(season, latitude);
+    let naive = date
         .and_hms_opt(h, m, s)
-        .unwrap_or_else(|| now.date_naive().and_hms_opt(23, 59, 59).expect("hms"));
-    match now.timezone().from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            dt.with_timezone(&Utc)
+        .unwrap_or_else(|| date.and_hms_opt(23, 59, 59).expect("hms"));
+    utc_from_naive_in_tz(&Local, naive)
+}
+
+/// DST spring-forward gaps step forward; never substitute `Utc::now()`.
+fn utc_from_naive_in_tz<Tz: TimeZone>(tz: &Tz, naive: NaiveDateTime) -> DateTime<Utc> {
+    let mut candidate = naive;
+    for _ in 0..4 {
+        match tz.from_local_datetime(&candidate) {
+            chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+                return dt.with_timezone(&Utc);
+            }
+            chrono::LocalResult::None => {
+                candidate = match candidate.checked_add_signed(Duration::hours(1)) {
+                    Some(next) => next,
+                    None => break,
+                };
+            }
         }
-        chrono::LocalResult::None => Utc::now(),
     }
+    naive.and_utc()
 }
 
 #[derive(Clone, Copy)]
 enum Knob {
     Hour,
-    Alt,
+    Season,
     Cloud,
     Precip,
     Fog,
@@ -188,7 +196,7 @@ enum Knob {
 impl Knob {
     const ALL: [Knob; 6] = [
         Knob::Hour,
-        Knob::Alt,
+        Knob::Season,
         Knob::Cloud,
         Knob::Precip,
         Knob::Fog,
@@ -197,8 +205,8 @@ impl Knob {
 
     fn spec(self, zh: bool) -> (&'static str, f32, f32, f32, &'static str) {
         let (id, min, max, step, en, z) = match self {
-            Knob::Hour => ("hour", 0.0, 24.0, 0.05, "Hour", "时刻"),
-            Knob::Alt => ("alt", -90.0, 90.0, 0.5, "Sun alt", "太阳高度"),
+            Knob::Hour => ("hour", 0.0, 24.0, 0.05, "Time", "时间"),
+            Knob::Season => ("season", 0.0, 1.0, 0.01, "Season", "季节"),
             Knob::Cloud => ("cloud", 0.0, 1.0, 0.01, "Cloud", "云量"),
             Knob::Precip => ("precip", 0.0, 1.0, 0.01, "Precip", "降水"),
             Knob::Fog => ("fog", 0.0, 1.0, 0.01, "Fog", "雾"),
@@ -230,7 +238,6 @@ enum Message {
     Knob(Knob, f64),
     Live(bool),
     Pause(bool),
-    OverrideSun(bool),
     Snow(bool),
     Preset(&'static str),
     Reset,
@@ -242,7 +249,6 @@ struct Widgets {
     knobs: [Entity<RangeField>; 6],
     live: Entity<Checkbox>,
     pause: Entity<Checkbox>,
-    override_sun: Entity<Checkbox>,
     snow: Entity<Checkbox>,
 }
 
@@ -294,15 +300,11 @@ impl ApplicationState for DebugPanel {
                 let summary = ui.child("sum", Text::new(p.summary()));
                 let live = ui.child(
                     "live",
-                    Checkbox::new(t(zh, "跟随当前时刻", "Live clock"), p.live_clock),
+                    Checkbox::new(t(zh, "跟随当前时间", "Live clock"), p.live_clock),
                 );
                 let pause = ui.child(
                     "pause",
                     Checkbox::new(t(zh, "暂停动画", "Pause anim"), p.anim_paused),
-                );
-                let override_sun = ui.child(
-                    "osun",
-                    Checkbox::new(t(zh, "手动太阳位置", "Override sun"), p.override_sun),
                 );
                 let snow = ui.child("snow", Checkbox::new(t(zh, "雪", "Snow"), p.snow));
 
@@ -335,9 +337,6 @@ impl ApplicationState for DebugPanel {
                 ui.on(pause, move |_, event: &ToggleChanged, cx| {
                     cx.dispatch_program(Message::Pause(event.checked));
                 });
-                ui.on(override_sun, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::OverrideSun(event.checked));
-                });
                 ui.on(snow, move |_, event: &ToggleChanged, cx| {
                     cx.dispatch_program(Message::Snow(event.checked));
                 });
@@ -350,7 +349,6 @@ impl ApplicationState for DebugPanel {
                     knobs: knobs.map(|k| k.expect("knob")),
                     live,
                     pause,
-                    override_sun,
                     snow,
                 }
             },
@@ -371,17 +369,11 @@ impl ApplicationState for DebugPanel {
                 Message::Live(on) => {
                     if !on && p.live_clock {
                         p.hour = local_hour(Local::now());
+                        p.season = season_from_utc(Utc::now(), p.latitude);
                     }
                     p.live_clock = on;
                 }
                 Message::Pause(on) => p.anim_paused = on,
-                Message::OverrideSun(on) => {
-                    if on && !p.override_sun {
-                        let view = p.build_view();
-                        p.sun_alt = view.sun.altitude_deg as f32;
-                    }
-                    p.override_sun = on;
-                }
                 Message::Snow(on) => p.snow = on,
                 Message::Preset(name) => p.apply_preset(name),
                 Message::Reset => *p = self.initial,
@@ -400,7 +392,6 @@ impl ApplicationState for DebugPanel {
             let _ = cx.update_component(w.summary, |t, _| t.value = p.summary());
             let _ = cx.update_component(w.live, |c, _| c.checked = p.live_clock);
             let _ = cx.update_component(w.pause, |c, _| c.checked = p.anim_paused);
-            let _ = cx.update_component(w.override_sun, |c, _| c.checked = p.override_sun);
             let _ = cx.update_component(w.snow, |c, _| c.checked = p.snow);
             for (i, knob) in Knob::ALL.into_iter().enumerate() {
                 let _ = cx.update_component(w.knobs[i], |r, _| {
@@ -442,18 +433,31 @@ fn slider(value: f32, min: f32, max: f32, step: f32, label: &str) -> RangeField 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sky_core::sun_dir_2d;
     use sky_gpu::SkyUniforms;
 
+    const BEIJING: (f64, f64) = (39.9042, 116.4074);
+
     fn params() -> DebugParams {
-        DebugParams::from_live(39.9042, 116.4074, SkyWeather::clear_fallback())
+        DebugParams::from_live(BEIJING.0, BEIJING.1, SkyWeather::clear_fallback())
+    }
+
+    /// 12:00 in China Standard Time (UTC+8, no DST) on the season's civil date.
+    fn beijing_noon_utc(season: f32) -> DateTime<Utc> {
+        let cst = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8");
+        let naive = date_for_season(season, BEIJING.0)
+            .and_hms_opt(12, 0, 0)
+            .expect("noon");
+        cst.from_local_datetime(&naive)
+            .single()
+            .expect("CST has no DST gap")
+            .with_timezone(&Utc)
     }
 
     #[test]
     fn frozen_hour_changes_sun_altitude() {
         let mut day = params();
         day.live_clock = false;
-        day.override_sun = false;
+        day.season = 0.5;
         day.hour = 12.0;
         let mut night = day;
         night.hour = 0.0;
@@ -463,19 +467,77 @@ mod tests {
     }
 
     #[test]
+    fn season_changes_beijing_noon_altitude() {
+        let weather = SkyWeather::clear_fallback();
+        let summer = SkyView::at(BEIJING.0, BEIJING.1, beijing_noon_utc(0.5), weather);
+        let winter = SkyView::at(BEIJING.0, BEIJING.1, beijing_noon_utc(0.0), weather);
+        assert!(
+            summer.sun.altitude_deg > winter.sun.altitude_deg + 20.0,
+            "summer {:.1} winter {:.1}",
+            summer.sun.altitude_deg,
+            winter.sun.altitude_deg
+        );
+        assert!((summer.season - 0.5).abs() < 0.03);
+        assert!(winter.season < 0.03 || winter.season > 0.97);
+    }
+
+    #[test]
     fn knobs_reach_uniforms() {
         let mut p = params();
+        p.live_clock = false;
         p.cloud_cover = 0.8;
-        p.override_sun = true;
-        p.sun_alt = 45.0;
+        p.season = 0.5;
+        p.hour = 12.0;
         let view = p.build_view();
         let u = SkyUniforms::from_view(&view, 1280, 720, 1.0, p.thunder);
         assert!((u.cloud_cover - 0.8).abs() < 1e-4);
-        let expected = sun_dir_2d(45.0);
-        for (got, want) in u.sun_dir.iter().zip(expected) {
-            assert!((got - want).abs() < 1e-5);
-        }
+        assert!(
+            (u.season - 0.5).abs() < 0.03,
+            "season knob should reach uniforms: {}",
+            u.season
+        );
         assert_eq!(u.sun_dir[2], 0.0);
+    }
+
+    fn season_wrap_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).abs();
+        d.min(1.0 - d)
+    }
+
+    #[test]
+    fn frozen_season_survives_local_utc_roundtrip() {
+        for s in [0.0, 0.25, 0.5, 0.75] {
+            let utc = utc_for_local(12.0, s, BEIJING.0);
+            let got = season_from_utc(utc, BEIJING.0);
+            assert!(
+                season_wrap_dist(got, s) < 0.02,
+                "season {s} round-tripped to {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn dst_gap_stays_near_requested_civil_time() {
+        use chrono::NaiveDate;
+        use chrono_tz::Europe::London;
+        let naive = NaiveDate::from_ymd_opt(2025, 3, 30)
+            .expect("date")
+            .and_hms_opt(1, 30, 0)
+            .expect("01:30");
+        assert!(
+            matches!(
+                London.from_local_datetime(&naive),
+                chrono::LocalResult::None
+            ),
+            "2025-03-30 01:30 must be a London DST gap"
+        );
+        let utc = utc_from_naive_in_tz(&London, naive);
+        let got = utc.with_timezone(&London).naive_local();
+        let delta_min = (got - naive).num_minutes().abs();
+        assert!(
+            delta_min <= 60,
+            "DST gap must step about 1h: requested {naive}, got {got} ({delta_min} min)"
+        );
     }
 
     #[test]
@@ -488,9 +550,11 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("params.toml");
         p.hour = 6.5;
+        p.season = 0.25;
         p.save(&path).unwrap();
         let loaded = DebugParams::load(&path).unwrap();
         assert!((loaded.hour - 6.5).abs() < 1e-4);
+        assert!((loaded.season - 0.25).abs() < 1e-4);
         assert!((loaded.precip - p.precip).abs() < 1e-4);
         let _ = fs::remove_dir_all(dir);
     }

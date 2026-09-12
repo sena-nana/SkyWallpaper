@@ -6,7 +6,7 @@ mod weather_map;
 pub use sun::SunState;
 pub use weather_map::{PrecipKind, SkyWeather, WeatherCode};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
 const RAD: f64 = 180.0 / std::f64::consts::PI;
@@ -58,6 +58,9 @@ fn solar_altitude_deg(ra_deg: f64, dec_deg: f64, lst_deg: f64, latitude_deg: f64
 pub struct SkyView {
     pub sun: SunState,
     pub weather: SkyWeather,
+    /// Solstice-phased season in `[0, 1)`: 0 local winter solstice, 0.5 local summer.
+    /// Southern latitudes are flipped so 0 is still local winter.
+    pub season: f32,
 }
 
 impl SkyView {
@@ -70,12 +73,46 @@ impl SkyView {
         Self {
             sun: SunState::at(latitude_deg, longitude_deg, utc),
             weather,
+            season: season_from_utc(utc, latitude_deg),
         }
     }
 
     pub fn now(latitude_deg: f64, longitude_deg: f64, weather: SkyWeather) -> Self {
         Self::at(latitude_deg, longitude_deg, Utc::now(), weather)
     }
+}
+
+fn northern_winter_solstice(year: i32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(year, 12, 21).expect("solstice date")
+}
+
+fn hemisphere_season(s: f64, latitude_deg: f64) -> f64 {
+    let s = s.rem_euclid(1.0);
+    if latitude_deg < 0.0 {
+        (s + 0.5).rem_euclid(1.0)
+    } else {
+        s
+    }
+}
+
+/// Local season in `[0, 1)` from UTC and observer latitude.
+/// 0 = local winter solstice, 0.25 spring, 0.5 summer, 0.75 autumn.
+pub fn season_from_utc(utc: DateTime<Utc>, latitude_deg: f64) -> f32 {
+    let date = utc.date_naive();
+    let this = northern_winter_solstice(date.year());
+    let origin = if date >= this {
+        this
+    } else {
+        northern_winter_solstice(date.year() - 1)
+    };
+    hemisphere_season((date - origin).num_days() as f64 / 365.25, latitude_deg) as f32
+}
+
+/// Civil date for `season` at `latitude_deg`.
+/// Origin is 2024-12-21 (northern winter solstice); offset is `round(season * 365.25)` days.
+pub fn date_for_season(season: f32, latitude_deg: f64) -> NaiveDate {
+    let s = hemisphere_season(f64::from(season), latitude_deg);
+    northern_winter_solstice(2024) + Duration::days((s * 365.25).round() as i64)
 }
 
 #[cfg(test)]
@@ -154,5 +191,58 @@ mod tests {
         assert!(zenith[0].abs() < 1e-5);
         assert!((zenith[1] - 1.0).abs() < 1e-5);
         assert_eq!(zenith[2], 0.0);
+    }
+
+    fn near(a: f32, b: f32, eps: f32) {
+        assert!((a - b).abs() < eps, "{a} ≉ {b}");
+    }
+
+    #[test]
+    fn beijing_solstices_are_season_poles() {
+        let summer = Utc.with_ymd_and_hms(2024, 6, 21, 4, 0, 0).unwrap();
+        let winter = Utc.with_ymd_and_hms(2024, 12, 21, 4, 0, 0).unwrap();
+        near(season_from_utc(summer, BEIJING.0), 0.5, 0.02);
+        near(season_from_utc(winter, BEIJING.0), 0.0, 0.02);
+    }
+
+    #[test]
+    fn southern_latitude_flips_season() {
+        let june = Utc.with_ymd_and_hms(2024, 6, 21, 2, 0, 0).unwrap();
+        near(season_from_utc(june, -33.87), 0.0, 0.02);
+        near(season_from_utc(june, 33.87), 0.5, 0.02);
+    }
+
+    fn season_wrap_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).abs();
+        d.min(1.0 - d)
+    }
+
+    #[test]
+    fn date_for_season_roundtrips_solstices() {
+        for &(s, lat) in &[
+            (0.0, BEIJING.0),
+            (0.25, BEIJING.0),
+            (0.5, BEIJING.0),
+            (0.75, BEIJING.0),
+            (0.0, -33.87),
+            (0.25, -33.87),
+            (0.5, -33.87),
+            (0.75, -33.87),
+        ] {
+            let date = date_for_season(s, lat);
+            let utc = date
+                .and_hms_opt(12, 0, 0)
+                .expect("noon")
+                .and_utc();
+            let got = season_from_utc(utc, lat);
+            assert!(
+                season_wrap_dist(got, s) < 0.02,
+                "season {s} lat {lat}: date {date} -> {got}"
+            );
+        }
+        let summer = date_for_season(0.5, BEIJING.0);
+        assert_eq!(summer.month(), 6);
+        let sydney_summer = date_for_season(0.5, -33.87);
+        assert_eq!(sydney_summer.month(), 12);
     }
 }

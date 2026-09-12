@@ -26,3 +26,6 @@ weather.workspace = true
 wgpu.workspace = true
 windows.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+chrono-tz = "0.10"

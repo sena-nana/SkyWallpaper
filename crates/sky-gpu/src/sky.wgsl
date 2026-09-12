@@ -7,14 +7,14 @@ struct Uniforms {
     precip_kind: f32,
     fog: f32,
     thunder: f32,
-    _pad0: f32,
+    season: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// Atmosphere: Hillaire 2020 coefficients via Andrew Helmer "Production Sky
-// Rendering" (https://www.shadertoy.com/view/slSXRW, MIT) as ported in
-// dnlzro/horizon `src/gradient.ts` (MIT).
+// Atmosphere: Hillaire 2020 via Helmer (MIT, https://www.shadertoy.com/view/slSXRW)
+// as ported in dnlzro/horizon `src/gradient.ts` (MIT). Display stops mix in OKLab;
+// physical scattering is twilight Mie only.
 const PI: f32 = 3.141592653589793;
 const FOV_DEG: f32 = 75.0;
 const RAYLEIGH_SCATTER: vec3<f32> = vec3<f32>(5.802e-6, 13.558e-6, 33.1e-6);
@@ -186,29 +186,180 @@ fn view_dir(s: f32) -> vec3<f32> {
     return normalize(vec3<f32>(0.0, s, focal_z));
 }
 
+fn cbrt(x: f32) -> f32 {
+    return sign(x) * pow(abs(x), 1.0 / 3.0);
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+fn linear_to_oklab(c: vec3<f32>) -> vec3<f32> {
+    let l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    let m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    let s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    let l_ = cbrt(l);
+    let m_ = cbrt(m);
+    let s_ = cbrt(s);
+    return vec3<f32>(
+        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+    );
+}
+
+fn oklab_to_linear(lab: vec3<f32>) -> vec3<f32> {
+    let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    let s_ = lab.x - 0.0897335040 * lab.y - 1.2914855480 * lab.z;
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+    return vec3<f32>(
+         4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    );
+}
+
+fn mix_oklab(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    let w = clamp(t, 0.0, 1.0);
+    let la = linear_to_oklab(srgb_to_linear(a));
+    let lb = linear_to_oklab(srgb_to_linear(b));
+    return linear_to_srgb(oklab_to_linear(mix(la, lb, w)));
+}
+
+struct SkyStops {
+    zenith: vec3<f32>,
+    mid: vec3<f32>,
+    horizon: vec3<f32>,
+}
+
+fn mix_stops(a: SkyStops, b: SkyStops, t: f32) -> SkyStops {
+    return SkyStops(
+        mix_oklab(a.zenith, b.zenith, t),
+        mix_oklab(a.mid, b.mid, t),
+        mix_oklab(a.horizon, b.horizon, t),
+    );
+}
+
+// 6 phases (night, blue hour, twilight, golden, day, noon) × 4 seasons
+// (winter, spring, summer, autumn).
+const LOOK_Z: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
+    vec3<f32>(0.102, 0.141, 0.220), vec3<f32>(0.110, 0.133, 0.255), vec3<f32>(0.110, 0.141, 0.282), vec3<f32>(0.118, 0.137, 0.235),
+    vec3<f32>(0.094, 0.141, 0.282), vec3<f32>(0.110, 0.145, 0.333), vec3<f32>(0.102, 0.141, 0.345), vec3<f32>(0.118, 0.137, 0.298),
+    vec3<f32>(0.102, 0.157, 0.376), vec3<f32>(0.141, 0.188, 0.439), vec3<f32>(0.110, 0.141, 0.408), vec3<f32>(0.141, 0.118, 0.314),
+    vec3<f32>(0.227, 0.314, 0.502), vec3<f32>(0.188, 0.365, 0.596), vec3<f32>(0.165, 0.353, 0.604), vec3<f32>(0.216, 0.298, 0.486),
+    vec3<f32>(0.353, 0.541, 0.671), vec3<f32>(0.282, 0.580, 0.800), vec3<f32>(0.239, 0.561, 0.831), vec3<f32>(0.345, 0.533, 0.722),
+    vec3<f32>(0.541, 0.686, 0.784), vec3<f32>(0.384, 0.722, 0.878), vec3<f32>(0.431, 0.706, 0.910), vec3<f32>(0.416, 0.659, 0.831),
+);
+const LOOK_M: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
+    vec3<f32>(0.141, 0.188, 0.282), vec3<f32>(0.157, 0.180, 0.325), vec3<f32>(0.157, 0.188, 0.337), vec3<f32>(0.165, 0.176, 0.298),
+    vec3<f32>(0.227, 0.282, 0.471), vec3<f32>(0.290, 0.259, 0.541), vec3<f32>(0.290, 0.282, 0.565), vec3<f32>(0.275, 0.247, 0.463),
+    vec3<f32>(0.690, 0.439, 0.565), vec3<f32>(0.878, 0.565, 0.627), vec3<f32>(0.769, 0.353, 0.471), vec3<f32>(0.816, 0.439, 0.314),
+    vec3<f32>(0.910, 0.690, 0.659), vec3<f32>(0.941, 0.690, 0.580), vec3<f32>(0.910, 0.627, 0.471), vec3<f32>(0.925, 0.655, 0.439),
+    vec3<f32>(0.541, 0.678, 0.769), vec3<f32>(0.510, 0.753, 0.878), vec3<f32>(0.455, 0.722, 0.910), vec3<f32>(0.580, 0.698, 0.800),
+    vec3<f32>(0.710, 0.804, 0.878), vec3<f32>(0.596, 0.831, 0.933), vec3<f32>(0.624, 0.816, 0.949), vec3<f32>(0.659, 0.784, 0.878),
+);
+const LOOK_H: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
+    vec3<f32>(0.220, 0.282, 0.376), vec3<f32>(0.235, 0.267, 0.416), vec3<f32>(0.227, 0.251, 0.408), vec3<f32>(0.247, 0.263, 0.369),
+    vec3<f32>(0.345, 0.408, 0.565), vec3<f32>(0.431, 0.353, 0.612), vec3<f32>(0.416, 0.353, 0.627), vec3<f32>(0.400, 0.337, 0.510),
+    vec3<f32>(0.910, 0.627, 0.565), vec3<f32>(0.941, 0.690, 0.565), vec3<f32>(0.910, 0.471, 0.282), vec3<f32>(0.910, 0.565, 0.251),
+    vec3<f32>(0.941, 0.784, 0.690), vec3<f32>(0.961, 0.800, 0.627), vec3<f32>(0.941, 0.753, 0.439), vec3<f32>(0.957, 0.769, 0.408),
+    vec3<f32>(0.769, 0.831, 0.878), vec3<f32>(0.753, 0.890, 0.941), vec3<f32>(0.706, 0.863, 0.957), vec3<f32>(0.831, 0.847, 0.878),
+    vec3<f32>(0.847, 0.894, 0.933), vec3<f32>(0.816, 0.933, 0.965), vec3<f32>(0.824, 0.922, 0.973), vec3<f32>(0.886, 0.890, 0.910),
+);
+
+fn mix4(season: f32, phase: i32, which: i32) -> vec3<f32> {
+    let base = u32(clamp(phase, 0, 5)) * 4u;
+    let x = fract(season) * 4.0;
+    let i = base + (u32(floor(x)) % 4u);
+    let j = base + ((u32(floor(x)) + 1u) % 4u);
+    var a = LOOK_Z[i];
+    var b = LOOK_Z[j];
+    switch which {
+        case 1: { a = LOOK_M[i]; b = LOOK_M[j]; }
+        case 2: { a = LOOK_H[i]; b = LOOK_H[j]; }
+        default: {}
+    }
+    return mix_oklab(a, b, fract(x));
+}
+
+fn phase_palette(phase: i32, season: f32) -> SkyStops {
+    return SkyStops(mix4(season, phase, 0), mix4(season, phase, 1), mix4(season, phase, 2));
+}
+
+fn solar_stops(alt_deg: f32, season: f32) -> SkyStops {
+    var s = phase_palette(0, season);
+    let keys = array<vec2<f32>, 5>(
+        vec2<f32>(-18.0, -4.0),
+        vec2<f32>(-4.0, 2.0),
+        vec2<f32>(2.0, 10.0),
+        vec2<f32>(10.0, 45.0),
+        vec2<f32>(45.0, 70.0),
+    );
+    for (var i = 0; i < 5; i = i + 1) {
+        s = mix_stops(s, phase_palette(i + 1, season), smoothstep(keys[i].x, keys[i].y, alt_deg));
+    }
+    return s;
+}
+
+fn solar_look(alt_deg: f32, season: f32, rd_y: f32) -> vec3<f32> {
+    let stops = solar_stops(alt_deg, season);
+    let t = pow(clamp(rd_y / 0.55, 0.0, 1.0), 0.62);
+    var col = mix_oklab(stops.horizon, stops.zenith, t);
+    let mid_w = smoothstep(0.0, 0.10, rd_y) * (1.0 - smoothstep(0.20, 0.46, rd_y));
+    col = mix_oklab(col, stops.mid, mid_w * 0.70);
+    return col;
+}
+
 fn stars(uv: vec2<f32>, night: f32) -> vec3<f32> {
     if (night <= 0.0) {
         return vec3<f32>(0.0);
     }
     let n = floor(uv * vec2<f32>(96.0, 54.0));
     let h = hash21(n);
-    let spark = smoothstep(0.9972, 1.0, h);
+    let spark = smoothstep(0.9965, 1.0, h);
     let twinkle = 0.7 + 0.3 * sin(u.time * (1.5 + h * 3.0) + h * 20.0);
-    return vec3<f32>(spark * twinkle * night);
+    return vec3<f32>(0.95, 0.96, 1.0) * (spark * twinkle * night * 0.55);
 }
 
-fn weather_grade(col: vec3<f32>, sun_y: f32) -> vec3<f32> {
+fn luma3(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn tinted(look: vec3<f32>, stops: SkyStops, toward_white: f32) -> vec3<f32> {
+    let base = mix(look, stops.horizon, 0.55);
+    let soft = mix(base, vec3<f32>(luma3(base)), 0.12);
+    return mix(soft, vec3<f32>(0.96, 0.97, 0.99), clamp(toward_white, 0.0, 1.0));
+}
+
+fn weather_grade(col: vec3<f32>, look: vec3<f32>, stops: SkyStops, sun_y: f32) -> vec3<f32> {
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
     let rain_amt = u.precip * (1.0 - u.precip_kind);
     let snow_amt = u.precip * u.precip_kind;
-    let day = clamp(sun_y + 0.25, 0.0, 1.0);
-    let lum = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let overcast = vec3<f32>(0.42, 0.47, 0.54) * (0.35 + 0.65 * day) + vec3<f32>(lum * 0.15);
-    var out = mix(col, overcast, cover * 0.48);
-    out = mix(out, out * vec3<f32>(0.78, 0.84, 0.94), rain_amt * 0.4);
-    let snow_col = mix(out, vec3<f32>(0.82, 0.88, 0.94) * (0.45 + 0.55 * day), 0.4);
-    out = mix(out, snow_col, snow_amt * 0.45);
+    let day = smoothstep(-0.12, 0.28, sun_y);
+    let overcast = mix_oklab(look, vec3<f32>(luma3(look)), 0.16)
+        * mix(vec3<f32>(0.90, 0.91, 0.96), vec3<f32>(0.88, 0.90, 0.94), day);
+    var out = mix(col, overcast, cover * 0.40);
+    out = mix(out, out * vec3<f32>(0.82, 0.86, 0.94), rain_amt * 0.32);
+    let snow_hi = tinted(look, stops, 0.14 + 0.36 * day);
+    out = mix(out, mix(out, snow_hi, 0.36), snow_amt * 0.40);
     return out;
+}
+
+fn cloud_color(look: vec3<f32>, stops: SkyStops, sun_y: f32, rd_y: f32) -> vec3<f32> {
+    let day = smoothstep(-0.15, 0.28, sun_y);
+    let lit = mix_oklab(stops.horizon, vec3<f32>(1.0), 0.08 * day);
+    let shade = mix_oklab(stops.zenith, look, 0.4) * mix(0.78, 0.92, day);
+    var col = mix_oklab(shade, lit, 0.35 + 0.50 * day);
+    let glow = (1.0 - rd_y) * smoothstep(0.22, 0.0, sun_y) * smoothstep(-0.20, 0.04, sun_y);
+    col = mix_oklab(col, mix_oklab(stops.horizon, stops.mid, 0.35), glow * 0.55);
+    return col;
 }
 
 fn clouds(uv: vec2<f32>) -> f32 {
@@ -288,37 +439,44 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     let rd = view_dir(sky_uv.y);
 
     let sun = normalize(u.sun_dir);
-    var col = atmosphere(rd, sun);
-    col *= HORIZON_EXPOSURE;
-    col = sunset_bias(col);
-    let night_w = smoothstep(-0.05, -0.14, sun.y);
-    let night_col = mix(
-        vec3<f32>(0.028, 0.036, 0.070),
-        vec3<f32>(0.010, 0.016, 0.042),
-        pow(clamp(rd.y / 0.62, 0.0, 1.0), 0.55)
-    );
-    col = max(col, night_col * night_w);
-    col = weather_grade(col, sun.y);
+    let alt_deg = degrees(asin(clamp(sun.y, -1.0, 1.0)));
+    let look = solar_look(alt_deg, u.season, rd.y);
+    let w_look = mix(1.0, 0.90, smoothstep(-8.0, 55.0, alt_deg));
+    let stops = solar_stops(alt_deg, u.season);
 
-    let night = smoothstep(0.15, -0.12, sun.y);
+    var phys = atmosphere(rd, sun);
+    phys *= HORIZON_EXPOSURE;
+    phys = sunset_bias(phys);
+    phys = aces(phys);
+    phys = pow(max(phys, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+
+    var col = mix(phys, look, w_look);
+    let mie_w = smoothstep(14.0, 2.0, abs(alt_deg))
+        * pow(1.0 - clamp(rd.y / 0.45, 0.0, 1.0), 1.35);
+    col = mix(col, mix(col, phys, 0.40), mie_w);
+    col = weather_grade(col, look, stops, sun.y);
+
+    let night = smoothstep(0.02, -0.22, sun.y);
     col += stars(sky_uv, night * (1.0 - u.cloud_cover * 0.85));
 
     let cld = clouds(sky_uv);
-    let cloud_lit = mix(vec3<f32>(0.15, 0.17, 0.22), vec3<f32>(0.95, 0.93, 0.9), clamp(sun.y * 0.8 + 0.35, 0.0, 1.0));
-    let sunset = (1.0 - rd.y) * smoothstep(0.35, -0.05, sun.y) * smoothstep(-0.25, 0.05, sun.y);
-    let cloud_col = mix(cloud_lit, vec3<f32>(1.0, 0.45, 0.2), sunset * 0.8);
+    let day = smoothstep(-0.15, 0.28, sun.y);
+    let cloud_col = cloud_color(look, stops, sun.y, rd.y);
     col = mix(col, cloud_col, cld * 0.88);
     col += cloud_col * cld * u.thunder * 1.8;
 
     col += vec3<f32>(0.75, 0.85, 1.0) * rain(uv) * 0.55;
-    col += vec3<f32>(0.95, 0.97, 1.0) * snow(uv) * 0.85;
+    let flake = tinted(look, stops, 0.12 + 0.45 * day);
+    col += flake * snow(uv) * 0.85;
     col += vec3<f32>(0.85, 0.9, 1.0) * lightning_bolt(uv) * 2.4;
 
     let fog_amt = u.fog * (1.0 - rd.y * 0.7);
-    col = mix(col, vec3<f32>(0.55, 0.58, 0.62) * (0.4 + 0.6 * clamp(sun.y + 0.2, 0.0, 1.0)), fog_amt);
+    let fog_col = mix(mix(look, stops.horizon, 0.4), vec3<f32>(luma3(look)), 0.16)
+        * mix(0.92, 1.06, day);
+    col = mix(col, fog_col, fog_amt);
 
     col += vec3<f32>(u.thunder * 0.12);
-    col = aces(col);
-    col = pow(max(col, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    col += (hash21(clip.xy) - 0.5) * 0.004;
+    col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(col, 1.0);
 }
