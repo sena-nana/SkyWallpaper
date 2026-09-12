@@ -8,6 +8,3 @@ description = "Local-time sky, sun position, and weather-parameter mapping"
 
 [dependencies]
 chrono.workspace = true
-
-[dev-dependencies]
-chrono = { workspace = true, features = ["clock", "std"] }
