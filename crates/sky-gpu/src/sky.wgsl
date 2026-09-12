@@ -101,6 +101,10 @@ fn intersect_sphere(p: vec3<f32>, d: vec3<f32>, radius: f32) -> f32 {
 fn compute_transmittance(height: f32, angle: f32) -> vec3<f32> {
     let ray_origin = vec3<f32>(0.0, GROUND_RADIUS + height, 0.0);
     let ray_direction = vec3<f32>(sin(angle), cos(angle), 0.0);
+    let t_ground = intersect_sphere(ray_origin, ray_direction, GROUND_RADIUS);
+    if (t_ground > 1e-3 || (t_ground >= 0.0 && ray_direction.y < 0.0)) {
+        return vec3<f32>(0.0);
+    }
     let distance = intersect_sphere(ray_origin, ray_direction, TOP_RADIUS);
     if (distance <= 0.0) {
         return vec3<f32>(1.0);
@@ -112,7 +116,7 @@ fn compute_transmittance(height: f32, angle: f32) -> vec3<f32> {
     var od_ozone = 0.0;
     for (var i = 0; i < T_STEPS; i = i + 1) {
         let pos = ray_origin + ray_direction * t;
-        let h = length(pos) - GROUND_RADIUS;
+        let h = max(length(pos) - GROUND_RADIUS, 0.0);
         od_rayleigh += exp(-h / RAYLEIGH_SCALE_HEIGHT) * segment;
         od_mie += exp(-h / MIE_SCALE_HEIGHT) * segment;
         let ozone_density = 1.0 - min(abs(h - 25e3) / 15e3, 1.0);
@@ -287,6 +291,13 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     var col = atmosphere(rd, sun);
     col *= HORIZON_EXPOSURE;
     col = sunset_bias(col);
+    let night_w = smoothstep(-0.05, -0.14, sun.y);
+    let night_col = mix(
+        vec3<f32>(0.028, 0.036, 0.070),
+        vec3<f32>(0.010, 0.016, 0.042),
+        pow(clamp(rd.y / 0.62, 0.0, 1.0), 0.55)
+    );
+    col = max(col, night_col * night_w);
     col = weather_grade(col, sun.y);
 
     let night = smoothstep(0.15, -0.12, sun.y);
