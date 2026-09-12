@@ -376,12 +376,14 @@ impl ApplicationState for DebugPanel {
                     knobs[i] = Some(field);
                 }
 
-                for (name, z, e) in PRESETS {
-                    let btn = ui.child(*name, Button::new(if zh { *z } else { *e }));
-                    ui.on(btn, move |_, _: &Activate, cx| {
-                        cx.dispatch_program(Message::Preset(name));
-                    });
-                }
+                ui.with("presets", List::new(), |ui| {
+                    for (name, z, e) in PRESETS {
+                        let btn = ui.child(*name, Button::new(if zh { *z } else { *e }));
+                        ui.on(btn, move |_, _: &Activate, cx| {
+                            cx.dispatch_program(Message::Preset(name));
+                        });
+                    }
+                });
                 let reset = ui.child(
                     "reset",
                     Button::new(if zh { "重置" } else { "Reset" }).kind(ButtonKind::Primary),
