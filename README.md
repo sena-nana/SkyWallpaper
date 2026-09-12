@@ -7,7 +7,7 @@ Windows 动态壁纸：物理天空随本地时间变化，天气来自 Open-Met
 ## 构建
 
 ```bash
-cargo run -p skywallpaper --release
+cargo run --release
 ```
 
 设置窗口用 NanaUI；壁纸层是独立 WGPU，画在桌面图标下面的 WorkerW。托盘可打开设置、暂停、退出。
@@ -17,8 +17,8 @@ cargo run -p skywallpaper --release
 普通窗口验证天空与天气（不是产品设置里的预览）：
 
 ```bash
-cargo run -p skywallpaper -- --preview
-cargo run -p skywallpaper -- --preview --weather rain --lat 39.9 --lon 116.4
+cargo preview
+cargo preview --weather rain --lat 39.9 --lon 116.4
 ```
 
 `--weather`：`clear` / `cloud` / `rain` / `snow` / `fog` / `thunder`。
@@ -26,7 +26,7 @@ cargo run -p skywallpaper -- --preview --weather rain --lat 39.9 --lon 116.4
 调运行时天空参数（不写配置）：
 
 ```bash
-cargo run -p skywallpaper -- --debug
+cargo debug
 ```
 
 预览窗 + 滑块面板。去掉分辨率后 12 个 uniform 可调；关掉预览即结束。
