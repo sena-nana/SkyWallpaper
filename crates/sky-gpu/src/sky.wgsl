@@ -12,23 +12,9 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// Atmosphere: Hillaire 2020 via Helmer (MIT, https://www.shadertoy.com/view/slSXRW)
-// as ported in dnlzro/horizon `src/gradient.ts` (MIT). Display stops mix in OKLab;
-// physical scattering is twilight Mie only.
-const PI: f32 = 3.141592653589793;
-const RAYLEIGH_SCATTER: vec3<f32> = vec3<f32>(5.802e-6, 13.558e-6, 33.1e-6);
-const MIE_SCATTER: f32 = 3.996e-6;
-const MIE_ABSORB: f32 = 4.44e-6;
-const OZONE_ABSORB: vec3<f32> = vec3<f32>(0.65e-6, 1.881e-6, 0.085e-6);
-const RAYLEIGH_SCALE_HEIGHT: f32 = 8e3;
-const MIE_SCALE_HEIGHT: f32 = 1.2e3;
-const GROUND_RADIUS: f32 = 6360e3;
-const TOP_RADIUS: f32 = 6460e3;
-const HORIZON_EXPOSURE: f32 = 25.0;
+// Sunset channel bias: Helmer / dnlzro/horizon (MIT, https://www.shadertoy.com/view/slSXRW).
 const SUNSET_BIAS_STRENGTH: f32 = 0.1;
-const MIE_G: f32 = 0.8;
-const VIEW_STEPS: i32 = 8;
-const T_STEPS: i32 = 6;
+const BLOB_POWER: f32 = 0.85;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -70,108 +56,6 @@ fn fbm(p: vec2<f32>) -> f32 {
         a *= 0.5;
     }
     return v;
-}
-
-fn rayleigh_phase(angle: f32) -> f32 {
-    let c = cos(angle);
-    return 3.0 * (1.0 + c * c) / (16.0 * PI);
-}
-
-fn mie_phase(angle: f32) -> f32 {
-    let g = MIE_G;
-    let c = cos(angle);
-    let scale = 3.0 / (8.0 * PI);
-    let num = (1.0 - g * g) * (1.0 + c * c);
-    let denom = (2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * c, 1.5);
-    return (scale * num) / max(denom, 1e-8);
-}
-
-// First positive hit with a sphere at the origin (Real-Time Collision Detection 5.3.2).
-fn intersect_sphere(p: vec3<f32>, d: vec3<f32>, radius: f32) -> f32 {
-    let b = dot(p, d);
-    let c = dot(p, p) - radius * radius;
-    let discr = b * b - c;
-    if (discr < 0.0) {
-        return -1.0;
-    }
-    let s = sqrt(discr);
-    let t_near = -b - s;
-    if (t_near < 0.0) {
-        return -b + s;
-    }
-    return t_near;
-}
-
-fn compute_transmittance(height: f32, angle: f32) -> vec3<f32> {
-    let ray_origin = vec3<f32>(0.0, GROUND_RADIUS + height, 0.0);
-    let ray_direction = vec3<f32>(sin(angle), cos(angle), 0.0);
-    let t_ground = intersect_sphere(ray_origin, ray_direction, GROUND_RADIUS);
-    if (t_ground > 1e-3 || (t_ground >= 0.0 && ray_direction.y < 0.0)) {
-        return vec3<f32>(0.0);
-    }
-    let distance = intersect_sphere(ray_origin, ray_direction, TOP_RADIUS);
-    if (distance <= 0.0) {
-        return vec3<f32>(1.0);
-    }
-    let segment = distance / f32(T_STEPS);
-    var t = 0.5 * segment;
-    var od_rayleigh = 0.0;
-    var od_mie = 0.0;
-    var od_ozone = 0.0;
-    for (var i = 0; i < T_STEPS; i = i + 1) {
-        let pos = ray_origin + ray_direction * t;
-        let h = max(length(pos) - GROUND_RADIUS, 0.0);
-        od_rayleigh += exp(-h / RAYLEIGH_SCALE_HEIGHT) * segment;
-        od_mie += exp(-h / MIE_SCALE_HEIGHT) * segment;
-        let ozone_density = 1.0 - min(abs(h - 25e3) / 15e3, 1.0);
-        od_ozone += ozone_density * segment;
-        t += segment;
-    }
-    let tau = RAYLEIGH_SCATTER * od_rayleigh + vec3<f32>(MIE_ABSORB) * od_mie + OZONE_ABSORB * od_ozone;
-    return exp(-tau);
-}
-
-fn atmosphere(rd: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
-    let ray_origin = vec3<f32>(0.0, GROUND_RADIUS, 0.0);
-    let t_exit = intersect_sphere(ray_origin, rd, TOP_RADIUS);
-    if (t_exit <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-
-    let segment = t_exit / f32(VIEW_STEPS);
-    var t_ray = segment * 0.5;
-    var inscattered = vec3<f32>(0.0);
-
-    let start_ray_angle = acos(abs(clamp(rd.y, -1.0, 1.0)));
-    let transmittance_camera_to_space = compute_transmittance(0.0, start_ray_angle);
-
-    for (var i = 0; i < VIEW_STEPS; i = i + 1) {
-        let sample_pos = ray_origin + rd * t_ray;
-        let sample_radius = length(sample_pos);
-        let up_unit = sample_pos / max(sample_radius, 1.0);
-        let sample_height = sample_radius - GROUND_RADIUS;
-
-        let view_cos = clamp(dot(up_unit, rd), -1.0, 1.0);
-        let sun_cos = clamp(dot(up_unit, sun), -1.0, 1.0);
-        let view_angle = acos(abs(view_cos));
-        let sun_angle = acos(sun_cos);
-
-        let transmittance_to_space = compute_transmittance(sample_height, view_angle);
-        let transmittance_camera_to_sample =
-            transmittance_camera_to_space / max(transmittance_to_space, vec3<f32>(1e-6));
-        let transmittance_light = compute_transmittance(sample_height, sun_angle);
-
-        let density_r = exp(-sample_height / RAYLEIGH_SCALE_HEIGHT);
-        let density_m = exp(-sample_height / MIE_SCALE_HEIGHT);
-        let sun_view_cos = clamp(dot(sun, rd), -1.0, 1.0);
-        let sun_view_angle = acos(sun_view_cos);
-        let phase_r = rayleigh_phase(sun_view_angle);
-        let phase_m = mie_phase(sun_view_angle);
-        let scattered = transmittance_light * (RAYLEIGH_SCATTER * density_r * phase_r + MIE_SCATTER * density_m * phase_m);
-        inscattered += transmittance_camera_to_sample * scattered * segment;
-        t_ray += segment;
-    }
-    return inscattered;
 }
 
 fn sunset_bias(color: vec3<f32>) -> vec3<f32> {
@@ -306,13 +190,73 @@ fn solar_stops(alt_deg: f32, season: f32) -> SkyStops {
     return s;
 }
 
-fn solar_look(alt_deg: f32, season: f32, rd_y: f32) -> vec3<f32> {
-    let stops = solar_stops(alt_deg, season);
-    let t = pow(clamp(rd_y / 0.55, 0.0, 1.0), 0.62);
-    var col = mix_oklab(stops.horizon, stops.zenith, t);
-    let mid_w = smoothstep(0.0, 0.10, rd_y) * (1.0 - smoothstep(0.20, 0.46, rd_y));
-    col = mix_oklab(col, stops.mid, mid_w * 0.70);
-    return col;
+struct MeshLayout {
+    wash: vec2<f32>,
+    well: vec2<f32>,
+    cool: vec2<f32>,
+    mid: vec2<f32>,
+    well_r: vec2<f32>,
+    punch: f32,
+}
+
+fn blob_w(uv: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
+    let d = (uv - center) / radius;
+    return exp(-pow(dot(d, d), BLOB_POWER));
+}
+
+// Winter well sits right, summer left; altitude is height; time is slow drift.
+fn mesh_layout(alt_deg: f32, season: f32, t: f32) -> MeshLayout {
+    let day = smoothstep(-12.0, 50.0, alt_deg);
+    let noon = smoothstep(20.0, 65.0, alt_deg);
+    let twilight = 1.0 - smoothstep(6.0, 18.0, abs(alt_deg));
+    let s = season * 6.2831853;
+    let cx = cos(s);
+    let sy = sin(s);
+    let well = clamp(
+        vec2<f32>(
+            0.5 + 0.20 * cx + 0.08 * sy + 0.08 * sin(t * 0.011 + s) + 0.07 * twilight * cx,
+            mix(0.26, 0.56, day) + 0.08 * noon + 0.06 * cos(t * 0.009 + 1.7 + s)
+                - 0.05 * twilight + 0.08 * sy,
+        ),
+        vec2<f32>(0.12, 0.16),
+        vec2<f32>(0.88, 0.78),
+    );
+    let cool = clamp(
+        vec2<f32>(1.0 - well.x + 0.04 * sin(s + 2.0), mix(0.62, 0.78, day) + 0.05 * cos(t * 0.007 + s)),
+        vec2<f32>(0.12, 0.40),
+        vec2<f32>(0.88, 0.92),
+    );
+    let mid = clamp(
+        vec2<f32>(mix(well.x, 0.5, 0.35) + 0.12 * sin(s + 1.3), well.y + 0.18 + 0.05 * sin(t * 0.013)),
+        vec2<f32>(0.15, 0.20),
+        vec2<f32>(0.85, 0.85),
+    );
+    let wash = vec2<f32>(0.5 + 0.10 * cos(s + 0.8) + 0.04 * sin(t * 0.006), mix(0.55, 0.72, day));
+    let well_r = vec2<f32>(mix(0.62, 0.88, twilight), mix(0.50, 0.72, twilight)) * mix(0.95, 1.08, day);
+    return MeshLayout(wash, well, cool, mid, well_r, 0.34 + 0.28 * twilight + 0.16 * day);
+}
+
+fn toward_well(uv: vec2<f32>, well: vec2<f32>) -> f32 {
+    return blob_w(uv, well, vec2<f32>(0.72, 0.58));
+}
+
+fn mesh_look(uv: vec2<f32>, stops: SkyStops, mesh: MeshLayout, alt_deg: f32) -> vec3<f32> {
+    let w0 = blob_w(uv, mesh.wash, vec2<f32>(0.95, 0.82)) + 0.06;
+    let w1 = blob_w(uv, mesh.well, mesh.well_r);
+    let w2 = blob_w(uv, mesh.cool, vec2<f32>(0.88, 0.78));
+    let w3 = blob_w(uv, mesh.mid, vec2<f32>(0.52, 0.46));
+    let day = smoothstep(-12.0, 50.0, alt_deg);
+    let twilight = 1.0 - smoothstep(6.0, 18.0, abs(alt_deg));
+    let well_col = mix_oklab(stops.horizon, vec3<f32>(1.0), 0.10 * day);
+    let cool_col = mix_oklab(stops.zenith, stops.mid, 0.08);
+    let l0 = linear_to_oklab(srgb_to_linear(stops.zenith));
+    let l1 = linear_to_oklab(srgb_to_linear(well_col));
+    let l2 = linear_to_oklab(srgb_to_linear(cool_col));
+    let l3 = linear_to_oklab(srgb_to_linear(stops.mid));
+    let sum = w0 + w1 + w2 + w3;
+    var col = linear_to_srgb(oklab_to_linear((l0 * w0 + l1 * w1 + l2 * w2 + l3 * w3) / max(sum, 1e-4)));
+    col = mix_oklab(col, well_col, w1 * mesh.punch);
+    return mix_oklab(col, sunset_bias(well_col), w1 * twilight * 0.35);
 }
 
 fn stars(uv: vec2<f32>, night: f32) -> vec3<f32> {
@@ -351,19 +295,26 @@ fn weather_grade(col: vec3<f32>, look: vec3<f32>, stops: SkyStops, sun_y: f32) -
     return out;
 }
 
-fn cloud_color(look: vec3<f32>, stops: SkyStops, sun_y: f32, rd_y: f32, thick: f32) -> vec3<f32> {
+fn cloud_color(
+    look: vec3<f32>,
+    stops: SkyStops,
+    sun_y: f32,
+    uv: vec2<f32>,
+    well: vec2<f32>,
+    thick: f32,
+) -> vec3<f32> {
     let day = smoothstep(-0.15, 0.28, sun_y);
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
+    let tw = toward_well(uv, well);
     let lit = mix_oklab(stops.horizon, vec3<f32>(1.0), 0.06 * day);
     let shade = mix_oklab(stops.zenith, look, 0.35) * mix(0.70, 0.88, day);
     let lit_w = clamp(
-        mix(0.52, 0.22, cover) * (0.40 + 0.60 * day) + (thick - 0.5) * 0.32,
+        mix(0.52, 0.22, cover) * (0.35 + 0.65 * tw) * (0.40 + 0.60 * day) + (thick - 0.5) * 0.32,
         0.0,
         1.0,
     );
-    let under = smoothstep(0.08, 0.45, rd_y);
-    var col = mix_oklab(shade, lit, lit_w * (1.0 - under * 0.35));
-    let glow = (1.0 - rd_y) * smoothstep(0.22, 0.0, sun_y) * smoothstep(-0.20, 0.04, sun_y);
+    var col = mix_oklab(shade, lit, lit_w);
+    let glow = tw * smoothstep(0.22, 0.0, sun_y) * smoothstep(-0.20, 0.04, sun_y);
     col = mix_oklab(col, mix_oklab(stops.horizon, stops.mid, 0.35), glow * (0.45 + 0.22 * (1.0 - cover)));
     return col;
 }
@@ -419,41 +370,18 @@ fn snow(uv: vec2<f32>) -> f32 {
     return acc * amt;
 }
 
-fn aces(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let sky_uv = vec2<f32>(uv.x, 1.0 - uv.y);
-    let rd = view_dir(sky_uv.y);
 
     let sun = normalize(u.sun_dir);
     let alt_deg = degrees(asin(clamp(sun.y, -1.0, 1.0)));
-    let look = solar_look(alt_deg, u.season, rd.y);
     let stops = solar_stops(alt_deg, u.season);
+    let mesh = mesh_layout(alt_deg, u.season, u.time);
+    let look = mesh_look(sky_uv, stops, mesh, alt_deg);
 
     var col = look;
-    let phys_fade = 1.0 - smoothstep(14.0, 18.0, abs(alt_deg));
-    if (phys_fade > 0.0) {
-        var phys = atmosphere(rd, sun);
-        phys *= HORIZON_EXPOSURE;
-        phys = sunset_bias(phys);
-        phys = aces(phys);
-        phys = pow(max(phys, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
-        let w_look = mix(1.0, 0.90, smoothstep(-8.0, 55.0, alt_deg));
-        col = mix(phys, look, w_look);
-        let mie_w = smoothstep(14.0, 2.0, abs(alt_deg))
-            * pow(1.0 - clamp(rd.y / 0.45, 0.0, 1.0), 1.35);
-        col = mix(col, mix(col, phys, 0.40), mie_w);
-        col = mix(look, col, phys_fade);
-    }
     col = weather_grade(col, look, stops, sun.y);
 
     let night = smoothstep(0.02, -0.22, sun.y);
@@ -461,7 +389,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let cld = clouds(sky_uv);
     let day = smoothstep(-0.15, 0.28, sun.y);
-    let cloud_col = cloud_color(look, stops, sun.y, rd.y, cld.y);
+    let cloud_col = cloud_color(look, stops, sun.y, sky_uv, mesh.well, cld.y);
     let cover = clamp(u.cloud_cover, 0.0, 1.0);
     col = mix(col, cloud_col, cld.x * mix(0.80, 0.94, cover));
     col += cloud_col * cld.x * u.thunder * 1.8;

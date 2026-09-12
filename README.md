@@ -1,6 +1,6 @@
 # SkyWallpaper
 
-Windows 动态壁纸：物理天空随本地时间变化，天气来自 Open-Meteo。
+Windows 动态壁纸：天色随本地时间变化，天气来自 Open-Meteo。
 
 需要 Rust 1.92+、Windows 10/11，以及本仓库旁的 [NanaUI](https://github.com/sena-nana/NanaUI)（默认 path `../NanaUI`）。
 
@@ -33,7 +33,7 @@ cargo debug
 
 ## 行为
 
-- 天色跟本机本地时钟：时间决定太阳高度，季节（0=当地冬至，南半球翻转）决定色盘。物理大气只提供黄昏地平辉光；主色是按高度角和季节混合的设计色相（OKLab）。不画太阳/月亮圆盘。夜空保持壁纸可读，不是压成黑屏
+- 天色跟本机本地时钟：高度角和季节决定 6×4 色盘，铺成偏心 mesh（光井不居中，季节绕左右轨道、高度角改高低、时间慢漂）。不画太阳/月亮圆盘。夜空保持壁纸可读，不是压成黑屏
 - 启动时用 IP 粗定位，设置里可搜索城市覆盖
 - Open-Meteo 失败时回退晴天模拟，昼夜仍正确
 - 插电约 30 FPS，电池约 15 FPS，全屏游戏时暂停
@@ -44,7 +44,7 @@ cargo debug
 
 ## 天空模型
 
-大气散射采用 Sébastien Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*（2020）的介质系数与单次散射，实现源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW)（MIT），并由 [dnlzro/horizon](https://github.com/dnlzro/horizon) 的 `src/gradient.ts` 整理。本仓库把它搬进 2D WGSL：竖向切片（地平线在底），太阳只用高度角，不画日盘。画面色度以设计色盘为主（天顶 / 中层 / 地平，按高度角六相 × 四季在 OKLab 中混合），物理路径只在晨昏给地平加一层 Mie 辉光。天气用色调叠加：雨是全屏玻璃雨点（天空以 1/4 分辨率离屏，再全屏折射合成；小雨朦胧+凝结小滴，大雨沿玻璃流下），另有轻量雪、雾、闪电。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
+画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。天气用色调叠加：雨是全屏玻璃雨点（天空以 1/4 分辨率离屏，再全屏折射合成；小雨朦胧+凝结小滴，大雨沿玻璃流下），另有轻量雪、雾、闪电。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
 
 ## 许可
 

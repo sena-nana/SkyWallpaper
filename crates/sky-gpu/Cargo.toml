@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "WGSL physical sky renderer for SkyWallpaper"
+description = "WGSL Helios-style sky mesh for SkyWallpaper"
 
 [dependencies]
 bytemuck.workspace = true

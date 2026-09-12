@@ -82,7 +82,7 @@ pub fn t(lang: Lang) -> Text {
             weather: "天气",
             running: "运行中",
             paused: "已暂停",
-            about: "物理天空随本地时间变化。天气来自 Open-Meteo，失败时回退晴天。",
+            about: "天色随本地时间变化。天气来自 Open-Meteo，失败时回退晴天。",
         },
         Lang::En => Text {
             app: "SkyWallpaper",
@@ -104,7 +104,7 @@ pub fn t(lang: Lang) -> Text {
             weather: "Weather",
             running: "Running",
             paused: "Paused",
-            about: "Physical sky follows local time. Weather from Open-Meteo; failures fall back to clear sky.",
+            about: "Sky color follows local time. Weather from Open-Meteo; failures fall back to clear sky.",
         },
     }
 }

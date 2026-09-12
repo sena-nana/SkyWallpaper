@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Windows live wallpaper: physical sky and weather"
+description = "Windows live wallpaper: sky color and weather"
 
 [[bin]]
 name = "skywallpaper"

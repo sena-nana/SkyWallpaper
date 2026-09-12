@@ -1,9 +1,9 @@
-//! Physical sky GPU pass.
+//! Sky GPU pass.
 //!
-//! Atmosphere coefficients and single-scattering follow Hillaire 2020 via
-//! Andrew Helmer's *Production Sky Rendering* (MIT,
-//! https://www.shadertoy.com/view/slSXRW) as implemented in
-//! [dnlzro/horizon](https://github.com/dnlzro/horizon) `src/gradient.ts`.
+//! Display is a Helios-style OKLab mesh (off-center ellipses from the 6×4
+//! palette). Sunset channel bias follows Andrew Helmer's *Production Sky
+//! Rendering* (MIT, https://www.shadertoy.com/view/slSXRW) as used in
+//! [dnlzro/horizon](https://github.com/dnlzro/horizon).
 
 use sky_core::{PrecipKind, SkyView, sun_dir_2d};
 
@@ -469,6 +469,7 @@ mod tests {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
         let night = sample(&device, &queue, -30.0, 0.5, SkyWeather::clear_fallback());
         let sunset = sample(&device, &queue, 0.0, 0.5, SkyWeather::clear_fallback());
+        let sunset_winter = sample(&device, &queue, 0.0, 0.0, SkyWeather::clear_fallback());
         let noon = sample(&device, &queue, 70.0, 0.5, SkyWeather::clear_fallback());
         let night_z = luma(night.zenith);
         let night_h = luma(night.horizon);
@@ -489,12 +490,41 @@ mod tests {
         );
         assert!(
             sunset.horizon[0] > sunset.horizon[2],
-            "sunset horizon should be warm {:?}",
+            "sunset well should be warm {:?}",
             sunset.horizon
         );
         assert!(
             noon_z > night_z + 0.15,
             "noon should be brighter: noon={noon_z:.3} night={night_z:.3}"
+        );
+        let summer_warm_l = warm(sunset.left);
+        let summer_warm_r = warm(sunset.right);
+        assert!(
+            summer_warm_l > summer_warm_r + 0.015,
+            "summer dusk well should sit left: L={summer_warm_l:.3} R={summer_warm_r:.3} l={:?} r={:?}",
+            sunset.left,
+            sunset.right
+        );
+        let winter_warm_l = warm(sunset_winter.left);
+        let winter_warm_r = warm(sunset_winter.right);
+        assert!(
+            winter_warm_r > winter_warm_l + 0.015,
+            "winter dusk well should sit right: L={winter_warm_l:.3} R={winter_warm_r:.3} l={:?} r={:?}",
+            sunset_winter.left,
+            sunset_winter.right
+        );
+        let clear = SkyWeather::clear_fallback();
+        sides_close(
+            &sample(&device, &queue, 0.0, 0.24, clear),
+            &sample(&device, &queue, 0.0, 0.26, clear),
+            "equinox",
+        );
+        // Peak Y-wobble phase so the year wrap is not sampled at a zero crossing.
+        let wrap_t = (std::f32::consts::PI - 1.7) / 0.009;
+        sides_close(
+            &sample_at(&device, &queue, 0.0, 0.99, clear, wrap_t),
+            &sample_at(&device, &queue, 0.0, 0.01, clear, wrap_t),
+            "year wrap",
         );
 
         let winter_night = sample(
@@ -539,6 +569,13 @@ mod tests {
             sunset_cloud.horizon[0] > sunset_cloud.horizon[2],
             "sunset clouds should stay warm {:?}",
             sunset_cloud.horizon
+        );
+        assert!(
+            (luma(sunset.left) - luma(sunset.right)).abs() > 0.02
+                || (warm(sunset.left) - warm(sunset.right)).abs() > 0.02,
+            "dusk mesh should vary horizontally l={:?} r={:?}",
+            sunset.left,
+            sunset.right
         );
 
         let noon_clear = sample(&device, &queue, 50.0, 0.5, SkyWeather::clear_fallback());
@@ -695,6 +732,8 @@ mod tests {
     struct Sample {
         zenith: [f32; 3],
         horizon: [f32; 3],
+        left: [f32; 3],
+        right: [f32; 3],
     }
 
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -724,6 +763,17 @@ mod tests {
         season: f32,
         weather: SkyWeather,
     ) -> Sample {
+        sample_at(device, queue, alt_deg, season, weather, 0.0)
+    }
+
+    fn sample_at(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        alt_deg: f64,
+        season: f32,
+        weather: SkyWeather,
+        time: f32,
+    ) -> Sample {
         const W: u32 = 64;
         const H: u32 = 48;
         // Unorm (not sRGB) so readback is the shader's display-referred output.
@@ -736,7 +786,7 @@ mod tests {
             weather,
             season,
         };
-        renderer.write_uniforms(queue, &SkyUniforms::from_view(&view, W, H, 0.0, 0.0));
+        renderer.write_uniforms(queue, &SkyUniforms::from_view(&view, W, H, time, 0.0));
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky-test"),
             size: wgpu::Extent3d {
@@ -795,10 +845,20 @@ mod tests {
             .expect("wait for sky readback");
         let data = slice.get_mapped_range().expect("map sky readback");
         let zenith = patch_rgb(&data, padded, W, H, W / 2, 3);
-        let horizon = patch_rgb(&data, padded, W, H, W / 2, H - 4);
+        let lower_l = patch_rgb(&data, padded, W, H, W / 5, H - 6);
+        let lower_c = patch_rgb(&data, padded, W, H, W / 2, H - 4);
+        let lower_r = patch_rgb(&data, padded, W, H, (W * 4) / 5, H - 6);
+        let horizon = brighter(brighter(lower_c, lower_l), lower_r);
+        let left = patch_rgb(&data, padded, W, H, W / 6, H / 2);
+        let right = patch_rgb(&data, padded, W, H, (W * 5) / 6, H / 2);
         drop(data);
         buffer.unmap();
-        Sample { zenith, horizon }
+        Sample {
+            zenith,
+            horizon,
+            left,
+            right,
+        }
     }
 
     fn patch_rgb(data: &[u8], padded: u32, width: u32, height: u32, cx: u32, cy: u32) -> [f32; 3] {
@@ -820,6 +880,29 @@ mod tests {
 
     fn luma(rgb: [f32; 3]) -> f32 {
         0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    }
+
+    fn warm(rgb: [f32; 3]) -> f32 {
+        rgb[0] - rgb[2]
+    }
+
+    fn brighter(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        if luma(a) >= luma(b) { a } else { b }
+    }
+
+    fn rgb_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+        (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()
+    }
+
+    fn sides_close(a: &Sample, b: &Sample, what: &str) {
+        assert!(
+            rgb_dist(a.left, b.left) < 0.08 && rgb_dist(a.right, b.right) < 0.08,
+            "{what}: pre L/R={:?}/{:?} post L/R={:?}/{:?}",
+            a.left,
+            a.right,
+            b.left,
+            b.right
+        );
     }
 
     fn rain_wx(code: u8, precip: f32, kind: PrecipKind) -> SkyWeather {
