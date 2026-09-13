@@ -44,7 +44,7 @@ cargo debug
 
 ## 天空模型
 
-画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨是全屏湿玻璃（结雾、格内黏住-滑落的弯曲水迹与残珠、高度场透镜；MIT 原创，不是 Shadertoy 移植），雪是多层视差拉丝，雾是地平指数体积。另有云间闪光。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
+画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨是全屏湿玻璃（结雾、网格滚动入画、格内黏住-滑落的弯曲水迹与残珠、高度场透镜；MIT 原创，不是 Shadertoy 移植），雪是多层视差拉丝，雾是地平指数体积。另有云间闪光。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
 
 ## 许可
 

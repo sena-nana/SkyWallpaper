@@ -432,13 +432,15 @@ fn snow(uv: vec2<f32>) -> f32 {
         let phase = p.y * 0.38 + u.time * omega + fi;
         p.x += p.y * shear + sin(phase) * wind;
         let cell = floor(p);
-        let fy = fract(p).y;
+        let fp = fract(p);
         let rnd = hash22(cell + vec2<f32>(fi * 5.3, 1.9));
         let vis = step(rnd.x, mix(0.12, 0.60, amt))
             * near
-            * smoothstep(0.0, 0.12, fy)
-            * smoothstep(1.0, 0.88, fy);
-        let q = fract(p) - 0.5 - (rnd - 0.5) * 0.28;
+            * smoothstep(0.0, 0.12, fp.y)
+            * smoothstep(1.0, 0.88, fp.y)
+            * smoothstep(0.0, 0.12, fp.x)
+            * smoothstep(1.0, 0.88, fp.x);
+        let q = fp - 0.5 - (rnd - 0.5) * 0.28;
         let wind_v = cos(phase) * (omega - 0.38 * fall) * wind;
         let vel = normalize(vec2<f32>(-shear * fall + wind_v, -fall));
         let across = abs(q.x * vel.y - q.y * vel.x);
@@ -509,11 +511,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
 
-    let wisp_a = fbm(vec2<f32>(uv.x * 1.3, uv.y * 1.8) + vec2<f32>(u.time * 0.022, u.time * 0.014));
-    let wisp_b = fbm(vec2<f32>(uv.x * 0.55, uv.y * 0.72) + vec2<f32>(u.time * 0.010, -u.time * 0.007));
-    let wisp = mix(wisp_a, wisp_b, 0.48);
-    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.62, 1.28, wisp), 0.0, 1.0);
-    let fog_col = mix(mix(look, stops.horizon, 0.45), vec3<f32>(luma3(stops.horizon)), mix(0.04, 0.16, day));
+    let wisp_a = fbm(vec2<f32>(uv.x * 2.6, uv.y * 3.4) + vec2<f32>(u.time * 0.022, u.time * 0.014));
+    let wisp_b = fbm(vec2<f32>(uv.x * 1.05, uv.y * 1.35) + vec2<f32>(u.time * 0.010, -u.time * 0.007));
+    let wisp = mix(wisp_a, wisp_b, 0.55);
+    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.38, 1.55, wisp), 0.0, 1.0);
+    let haze = mix(stops.horizon, vec3<f32>(luma3(stops.horizon)), mix(0.12, 0.42, day));
+    let fog_col = mix(look, haze, 0.82);
     col = mix(col, fog_col, fog_amt);
     col += (hash21(in.pos.xy) - 0.5) * 0.004;
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
