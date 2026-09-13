@@ -80,11 +80,14 @@ struct SkyTarget {
     _texture: wgpu::Texture,
     sky_view: wgpu::TextureView,
     glass_bg: wgpu::BindGroup,
+    mip_views: Vec<wgpu::TextureView>,
+    mip_bind_groups: Vec<wgpu::BindGroup>,
 }
 
 pub struct SkyRenderer {
     sky_pipeline: wgpu::RenderPipeline,
     glass_pipeline: wgpu::RenderPipeline,
+    mip_pipeline: wgpu::RenderPipeline,
     sky_bind_group: wgpu::BindGroup,
     uniform_buf: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -92,21 +95,43 @@ pub struct SkyRenderer {
     format: wgpu::TextureFormat,
     targets: Vec<SkyTarget>,
     last_rain: f32,
+    rain_visual: f32,
+    last_time: f32,
+    last_time_valid: bool,
 }
 
 fn offscreen_extent(width: u32, height: u32) -> (u32, u32) {
-    ((width.max(1) + 3) / 4, (height.max(1) + 3) / 4)
+    (width.max(1).div_ceil(4), height.max(1).div_ceil(4))
+}
+
+fn heartfelt_mip_count(width: u32, height: u32) -> u32 {
+    let full_mip_count = 32 - width.max(height).max(1).leading_zeros();
+    full_mip_count.min(7)
+}
+
+fn heartfelt_focus_mip(rain: f32) -> u32 {
+    (3.0 + 3.0 * rain.clamp(0.0, 1.0)).ceil() as u32
 }
 
 fn tex_view(texture: &wgpu::Texture, usage: wgpu::TextureUsages, label: &str) -> wgpu::TextureView {
+    tex_mip_view(texture, usage, label, 0, Some(1))
+}
+
+fn tex_mip_view(
+    texture: &wgpu::Texture,
+    usage: wgpu::TextureUsages,
+    label: &str,
+    base_mip_level: u32,
+    mip_level_count: Option<u32>,
+) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some(label),
         format: None,
         dimension: Some(wgpu::TextureViewDimension::D2),
         usage: Some(usage),
         aspect: wgpu::TextureAspect::All,
-        base_mip_level: 0,
-        mip_level_count: Some(1),
+        base_mip_level,
+        mip_level_count,
         base_array_layer: 0,
         array_layer_count: Some(1),
     })
@@ -184,6 +209,10 @@ impl SkyRenderer {
             label: Some("glass"),
             source: wgpu::ShaderSource::Wgsl(wgsl_source(include_str!("glass.wgsl")).into()),
         });
+        let mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sky mip"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("mip.wgsl").into()),
+        });
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky uniforms"),
             size: std::mem::size_of::<SkyUniforms>() as u64,
@@ -249,9 +278,9 @@ impl SkyRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
+            lod_max_clamp: 32.0,
             compare: None,
             anisotropy_clamp: 1,
             border_color: None,
@@ -275,9 +304,17 @@ impl SkyRenderer {
             &glass_shader,
             format,
         );
+        let mip_pipeline = fullscreen_pipeline(
+            device,
+            "sky mip pipeline",
+            &glass_layout,
+            &mip_shader,
+            format,
+        );
         Self {
             sky_pipeline,
             glass_pipeline,
+            mip_pipeline,
             sky_bind_group,
             uniform_buf,
             sampler,
@@ -285,12 +322,43 @@ impl SkyRenderer {
             format,
             targets: Vec::new(),
             last_rain: 0.0,
+            rain_visual: 0.0,
+            last_time: 0.0,
+            last_time_valid: false,
         }
     }
 
     pub fn write_uniforms(&mut self, queue: &wgpu::Queue, uniforms: &SkyUniforms) {
-        self.last_rain = uniforms.precip * (1.0 - uniforms.precip_kind);
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
+        let target = (uniforms.precip * (1.0 - uniforms.precip_kind)).clamp(0.0, 1.0);
+        if uniforms.precip_kind >= 0.5 {
+            // Snow and other non-rain precipitation must never take the glass
+            // path while a previous rain value is fading out.
+            self.rain_visual = 0.0;
+            self.last_rain = 0.0;
+        } else {
+            let raw_dt = uniforms.time - self.last_time;
+            if !self.last_time_valid {
+                self.rain_visual = target;
+            } else if raw_dt < -1e-5 {
+                // A clock reset or resume can move time backwards. Keep the
+                // current visual value for this frame instead of snapping to
+                // the new target, then resume smoothing from the new epoch.
+            } else if raw_dt <= 1e-5 {
+                self.rain_visual = target;
+            } else {
+                let dt = raw_dt.min(0.1);
+                let k = 1.0 - (-dt * 4.0).exp();
+                self.rain_visual += (target - self.rain_visual) * k;
+            }
+            self.last_rain = self.rain_visual;
+        }
+        self.last_time_valid = true;
+        self.last_time = uniforms.time;
+        let mut smoothed = *uniforms;
+        if uniforms.precip_kind < 0.5 {
+            smoothed.precip = self.rain_visual;
+        }
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&smoothed));
     }
 
     pub fn retain_sizes(&mut self, sizes: &[(u32, u32)]) {
@@ -313,6 +381,9 @@ impl SkyRenderer {
 
     fn create_target(&self, device: &wgpu::Device, width: u32, height: u32) -> SkyTarget {
         let (ow, oh) = offscreen_extent(width, height);
+        // Heartfelt's focus stays in the 2..6 range, so mip 0..6 is sufficient.
+        // Avoid generating tail mips that can never be sampled by the glass pass.
+        let mip_level_count = heartfelt_mip_count(ow, oh);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky offscreen"),
             size: wgpu::Extent3d {
@@ -320,7 +391,7 @@ impl SkyRenderer {
                 height: oh,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
@@ -332,10 +403,12 @@ impl SkyRenderer {
             wgpu::TextureUsages::RENDER_ATTACHMENT,
             "sky offscreen rt",
         );
-        let sample_view = tex_view(
+        let sample_view = tex_mip_view(
             &texture,
             wgpu::TextureUsages::TEXTURE_BINDING,
             "sky offscreen sample",
+            0,
+            Some(mip_level_count),
         );
         let glass_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass bg"),
@@ -355,12 +428,75 @@ impl SkyRenderer {
                 },
             ],
         });
+        let mut mip_views = Vec::new();
+        let mut mip_bind_groups = Vec::new();
+        for level in 0..mip_level_count.saturating_sub(1) {
+            let source_view = tex_mip_view(
+                &texture,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+                "sky mip source",
+                level,
+                Some(1),
+            );
+            mip_views.push(tex_mip_view(
+                &texture,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                "sky mip target",
+                level + 1,
+                Some(1),
+            ));
+            mip_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sky mip bg"),
+                layout: &self.glass_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+        }
         SkyTarget {
             width,
             height,
             _texture: texture,
             sky_view,
             glass_bg,
+            mip_views,
+            mip_bind_groups,
+        }
+    }
+
+    fn generate_mips(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &SkyTarget,
+        max_level: u32,
+    ) {
+        for (level, (view, bind_group)) in target
+            .mip_views
+            .iter()
+            .zip(&target.mip_bind_groups)
+            .enumerate()
+        {
+            if level as u32 + 1 > max_level {
+                break;
+            }
+            color_pass(
+                encoder,
+                "sky mip pass",
+                view,
+                &self.mip_pipeline,
+                bind_group,
+            );
         }
     }
 
@@ -383,6 +519,11 @@ impl SkyRenderer {
             &self.targets[idx].sky_view,
             &self.sky_pipeline,
             &self.sky_bind_group,
+        );
+        self.generate_mips(
+            encoder,
+            &self.targets[idx],
+            heartfelt_focus_mip(self.last_rain),
         );
         color_pass(
             encoder,
@@ -430,6 +571,11 @@ impl SkyRenderer {
             &self.sky_pipeline,
             &self.sky_bind_group,
         );
+        self.generate_mips(
+            encoder,
+            &self.targets[idx],
+            heartfelt_focus_mip(self.last_rain),
+        );
     }
 
     #[cfg(test)]
@@ -470,6 +616,7 @@ mod tests {
     fn sky_shader_parses() {
         naga::front::wgsl::parse_str(&wgsl_source(include_str!("sky.wgsl"))).expect("sky.wgsl");
         naga::front::wgsl::parse_str(&wgsl_source(include_str!("glass.wgsl"))).expect("glass.wgsl");
+        naga::front::wgsl::parse_str(include_str!("mip.wgsl")).expect("mip.wgsl");
     }
 
     #[test]
@@ -477,6 +624,13 @@ mod tests {
         assert_eq!(offscreen_extent(1920, 1080), (480, 270));
         assert_eq!(offscreen_extent(160, 90), (40, 23));
         assert_eq!(offscreen_extent(1, 1), (1, 1));
+        assert_eq!(heartfelt_mip_count(480, 270), 7);
+        assert_eq!(heartfelt_mip_count(40, 23), 6);
+        assert_eq!(heartfelt_mip_count(1, 1), 1);
+        assert_eq!(heartfelt_focus_mip(0.0), 3);
+        assert_eq!(heartfelt_focus_mip(0.22), 4);
+        assert_eq!(heartfelt_focus_mip(0.45), 5);
+        assert_eq!(heartfelt_focus_mip(0.85), 6);
     }
 
     #[test]
@@ -901,6 +1055,23 @@ mod tests {
         renderer.draw(&device, &mut encoder, &tex, W, H);
         queue.submit(Some(encoder.finish()));
         assert_eq!(renderer.target_count(), 1);
+
+        let snow_view = SkyView {
+            sun: view.sun,
+            weather: SkyWeather {
+                precip_kind: PrecipKind::Snow,
+                ..view.weather
+            },
+            season: view.season,
+        };
+        renderer.write_uniforms(&queue, &SkyUniforms::from_view(&snow_view, W, H, 1.1, 0.0));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        renderer.draw(&device, &mut encoder, &tex, W, H);
+        queue.submit(Some(encoder.finish()));
+        assert_eq!(renderer.target_count(), 0);
+
+        renderer.write_uniforms(&queue, &SkyUniforms::from_view(&view, W, H, 1.2, 0.0));
+
         renderer.retain_sizes(&[]);
         assert_eq!(renderer.target_count(), 0);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -921,7 +1092,13 @@ mod tests {
             weather: dry,
             season: view.season,
         };
-        renderer.write_uniforms(&queue, &SkyUniforms::from_view(&dry_view, W, H, 1.0, 0.0));
+        let rain_before_clock_reset = renderer.rain_visual;
+        renderer.write_uniforms(&queue, &SkyUniforms::from_view(&dry_view, W, H, 0.5, 0.0));
+        assert_eq!(renderer.rain_visual, rain_before_clock_reset);
+        for frame in 0..12 {
+            let time = 1.3 + frame as f32 * 0.1;
+            renderer.write_uniforms(&queue, &SkyUniforms::from_view(&dry_view, W, H, time, 0.0));
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         renderer.draw(&device, &mut encoder, &tex, W, H);
         queue.submit(Some(encoder.finish()));
@@ -1312,7 +1489,17 @@ mod tests {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/rain-dump");
         let dump = |name: &str, alt: f64, weather: SkyWeather| {
-            let px = pixels(&device, &queue, alt, 0.5, weather, 2.4, 960, 540, Frame::Auto);
+            let px = pixels(
+                &device,
+                &queue,
+                alt,
+                0.5,
+                weather,
+                2.4,
+                960,
+                540,
+                Frame::Auto,
+            );
             write_bmp(&dir.join(name), &px, 960, 540);
         };
         dump("drizzle.bmp", 38.0, rain_wx(51, 0.22, PrecipKind::Rain));

@@ -31,6 +31,16 @@ cargo debug
 
 预览窗 + 滑块面板。时间、季节、天气可调；关掉预览即结束。
 
+雨玻璃性能基准会测试 drizzle / light / storm 在 1080p 和 4K 下的 CPU
+提交等待时间，并在适配器支持 timestamp query 时记录 GPU 时间：
+
+```bash
+cargo run -p sky-gpu --release --bin rain_perf
+```
+
+CSV 中的 `cpu_wait_*` 包含编码、提交及等待 GPU 完成的时间；`gpu_*` 是命令编码器
+首尾 timestamp 的设备执行时间。不支持 timestamp query 时，GPU 列为 `NaN`。
+
 ## 行为
 
 - 天色跟本机本地时钟：高度角和季节决定 6×4 色盘，铺成偏心 mesh（光井不居中，季节绕左右轨道、高度角改高低、时间慢漂）。不画太阳/月亮圆盘。夜空保持壁纸可读，不是压成黑屏
@@ -44,8 +54,9 @@ cargo debug
 
 ## 天空模型
 
-画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨是全屏湿玻璃（静露长大后下滑或从顶滑到底，碰上小滴被吞、大滴变大；泪滴 mask 折射，水迹只刮开干区结雾；MIT 原创，不是 Shadertoy 移植），雪是多层近大远小软片，雾是地平指数体积。另有云间闪光。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
+画面是 Helios 式抽象 mesh：天顶 / 中层 / 地平色盘（高度角六相 × 四季，OKLab）铺成四块偏心椭圆。季节把光井放在左右轨道上（冬右夏左，春分秋分连续过渡），高度角改高低，时间做慢漂。没有地平色带或日盘。晨昏把暖色压进光井（通道偏移源自 Andrew Helmer [*Production Sky Rendering*](https://www.shadertoy.com/view/slSXRW) / [dnlzro/horizon](https://github.com/dnlzro/horizon)，MIT）。云的亮面跟着光井。夜空是分层 cell 星场，云雾会盖住星。天气用色调叠加：雨使用 Martijn Steinrucken（BigWings）的 Heartfelt 雨玻璃算法（CC BY-NC-SA 3.0），包括原版 `StaticDrops`、`DropLayer2`、`Drops`、法线扰动和 LOD 模糊；雪是多层近大远小软片，雾是地平指数体积。另有云间闪光。`cargo debug` 的 precip 滑块可从无雨扫到暴雨。
 
 ## 许可
 
+除 `crates/sky-gpu/src/glass.wgsl` 按 CC BY-NC-SA 3.0 提供外，其余代码使用
 MIT。天空模型部分同时遵循 Helmer / Horizon 的 MIT 署名要求。

@@ -8,9 +8,9 @@ description = "WGSL Helios-style sky mesh for SkyWallpaper"
 
 [dependencies]
 bytemuck.workspace = true
+pollster.workspace = true
 sky-core.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
-pollster.workspace = true
