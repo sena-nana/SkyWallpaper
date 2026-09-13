@@ -438,16 +438,10 @@ fn snow(uv: vec2<f32>) -> f32 {
             * smoothstep(vec2<f32>(1.0), vec2<f32>(0.88), fp);
         let vis = step(rnd.x, mix(0.10, 0.50, amt)) * edge.x * edge.y;
         let q = fp - 0.5 - (rnd - 0.5) * 0.30;
-        let wind_v = cos(phase) * (omega - 0.38 * fall) * wind;
-        let vel = normalize(vec2<f32>(-shear * fall + wind_v, -fall));
-        let across = abs(q.x * vel.y - q.y * vel.x);
-        let along = q.x * vel.x + q.y * vel.y;
-        let squash = mix(1.0, 1.28, near);
         let rad = mix(0.055, 0.20, rnd.y) * mix(0.32, 1.12, near);
-        let d = length(vec2<f32>(across, along / squash));
-        let x = clamp(1.0 - d / max(rad, 1e-4), 0.0, 1.0);
+        let x = clamp(1.0 - length(q) / max(rad, 1e-4), 0.0, 1.0);
         let soft = x * x * (3.0 - 2.0 * x);
-        acc += soft * vis * mix(0.14, 0.52, near);
+        acc += soft * vis * mix(0.12, 0.42, near);
     }
     return clamp(acc, 0.0, 1.15) * mix(0.45, 1.0, amt);
 }
@@ -517,8 +511,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let band = fbm(vec2<f32>(uv.x * 1.7, uv.y * 0.65) + vec2<f32>(u.time * 0.008, u.time * 0.004));
     let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.70, 1.38, wisp) * mix(0.88, 1.16, band), 0.0, 1.0);
     let hz = luma3(stops.horizon);
-    let haze = mix(stops.horizon, vec3<f32>(hz + 0.12), mix(0.42, 0.76, day));
-    let fog_col = mix(look, haze, 0.94);
+    let haze = mix(stops.horizon, vec3<f32>(hz + 0.16), mix(0.50, 0.82, day));
+    let fog_col = mix(look, haze, 0.96);
     col = mix(col, fog_col, fog_amt);
     col += (hash21(in.pos.xy) - 0.5) * 0.004;
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));

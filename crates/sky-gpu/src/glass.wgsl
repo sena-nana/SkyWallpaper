@@ -71,18 +71,6 @@ fn bump(x: f32, vis: f32, r: f32) -> vec2<f32> {
     return vec2<f32>(b * b * k * r, -4.0 * x * b * k);
 }
 
-fn ridge_grad(tdx: f32, rad: f32, vis: f32, dtdx_dy: f32, dvis_dy: f32, dr_dy: f32) -> vec3<f32> {
-    let r = max(rad, 1e-4);
-    let x = tdx / r;
-    let p = bump(x, vis, r);
-    if (p.x <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let b = 1.0 - x * x;
-    let dh_dr = vis / LENS_REF_RAD * b * (1.0 + 3.0 * x * x);
-    return vec3<f32>(p.x, p.y, p.y * dtdx_dy + p.x / vis * dvis_dy + dh_dr * dr_dy);
-}
-
 fn lens_grad(offset: vec2<f32>, rad: f32, vis: f32) -> vec3<f32> {
     let r = max(rad, 1e-4);
     let d = length(offset);
@@ -165,26 +153,17 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
                 mix(0.016, 0.034, rnd.y) * mass,
                 vis,
             ));
-            let tx = path(path0 + st_y, rnd);
             let span = max(y, 1e-3);
             let dist_raw = st_y / span;
             let r_env = sqrt(clamp(dist_raw, 0.0, 1.0));
             let cap = sm(-0.03, 0.05, st_y);
             let head = sm(y + 0.06, y - 0.03, st_y);
-            let w0 = mix(0.08, 0.13, rnd.x) * sx * mass;
             let trail_vis = cap.x * head.x * vis;
             if (trail_vis > 0.0) {
-                let tapering = select(0.0, 1.0, dist_raw > 0.0 && dist_raw < 1.0);
-                let trail = ridge_grad(
-                    (st_x - tx.x) * sx,
-                    w0 * mix(0.22, 1.0, r_env),
-                    trail_vis,
-                    -tx.y * (7.0 + rows) * sx,
-                    (cap.y * head.x + cap.x * head.y) * rows * vis,
-                    tapering * w0 * 0.78 * 0.5 / max(r_env * span, 1e-4) * rows,
-                );
-                f = smax3(f, trail);
-                wet = max(wet, trail_vis * mix(0.50, 1.0, r_env));
+                let rad = mix(0.08, 0.13, rnd.x) * sx * mass * mix(0.22, 1.0, r_env);
+                let cd = abs((st_x - path(path0 + st_y, rnd).x) * sx);
+                let envelope = smoothstep(max(rad, 1e-4), 0.0, cd);
+                wet = max(wet, trail_vis * envelope * mix(0.50, 1.0, r_env));
             }
             let slot0 = floor(st_y * 8.0);
             for (var kb = -1; kb <= 1; kb = kb + 1) {
@@ -274,14 +253,15 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     let blur = frost_blur(warped);
     let lum = luma3(blur);
     let milk = mix(blur, vec3<f32>(lum) * vec3<f32>(0.90, 0.94, 1.02) + vec3<f32>(0.055), 0.42);
-    let cut = smoothstep(0.04, 0.34, max(field.x, field.w));
-    let frost = mix(0.62, 0.88, rain) * (1.0 - cut);
+    let drop = smoothstep(0.10, 0.22, field.x);
+    let max_frost = mix(0.62, 0.88, rain) * (1.0 - clamp(field.w, 0.0, 1.0));
+    let frost = mix(max_frost, 0.0, drop);
     var col = mix(sharp, milk, frost);
 
     let N = normalize(vec3<f32>(-n.x, -n.y, 0.28));
     let L = normalize(vec3<f32>(u.sun_dir.x, -u.sun_dir.y, max(u.sun_dir.z, 0.18)));
     let H = normalize(L + vec3<f32>(0.0, 0.0, 1.0));
-    let spec = pow(max(dot(N, H), 0.0), 52.0) * smoothstep(0.14, 0.48, field.x);
+    let spec = pow(max(dot(N, H), 0.0), 52.0) * drop;
     let sun_l = smoothstep(-0.04, 0.28, u.sun_dir.y);
     col += spec * mix(0.07, 0.26, sun_l) * mix(vec3<f32>(1.0, 0.90, 0.72), vec3<f32>(1.0), sun_l);
 
