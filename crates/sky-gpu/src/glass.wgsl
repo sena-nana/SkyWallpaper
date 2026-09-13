@@ -49,11 +49,10 @@ fn saw01(b: f32, t: f32) -> f32 {
     return smoothstep(0.0, b, t) * smoothstep(1.0, b, t);
 }
 
-fn sd_egg(p: vec2<f32>, ra: f32, rb: f32) -> f32 {
+fn sd_egg(p: vec2<f32>, rb: f32) -> f32 {
     let k = sqrt(3.0);
-    var q = p;
-    q.x = abs(q.x);
-    let r = ra - rb;
+    let q = vec2<f32>(abs(p.x), p.y);
+    let r = -rb;
     var d: f32;
     if (q.y < 0.0) {
         d = length(q) - r;
@@ -87,40 +86,36 @@ fn static_drops(uv: vec2<f32>, t: f32, amount: f32) -> f32 {
 }
 
 fn drop_layer(uv: vec2<f32>, t: f32) -> vec2<f32> {
-    let a = vec2<f32>(6.0, 1.0);
-    let grid = a * 2.0;
-    let gx = uv.x * grid.x;
+    let gx = uv.x * 12.0;
     let origin_c = floor(gx);
     var m = 0.0;
     var trail = 0.0;
     for (var ix = -1; ix <= 1; ix = ix + 1) {
         let col = origin_c + f32(ix);
         let grid_fall = hash21(vec2<f32>(col, 0.17)) * 0.333 + 0.5;
-        var qy = uv.y - t * grid_fall / a.y;
+        var qy = uv.y - t * grid_fall;
         qy += hash21(vec2<f32>(col, 1.31));
-        let gy = qy * grid.y;
+        let gy = qy * 2.0;
         let nrow0 = floor(gy);
         for (var jy = -1; jy <= 1; jy = jy + 1) {
             let nrow = nrow0 + f32(jy);
             let rnd = hash22(vec2<f32>(col, nrow));
             let rndz = hash21(vec2<f32>(col + 3.1, nrow + 8.7));
-            let st = vec2<f32>(gx - col, gy - nrow) - vec2<f32>(0.5, 0.0);
+            let st = vec2<f32>(gx - col - 0.5, gy - nrow);
             var x = rnd.x - 0.5;
             let wiggle = sin(qy * 20.0 + sin(qy * 20.0));
             x += wiggle * (0.5 - abs(x)) * (rndz - 0.5) * 0.3;
             x *= 0.6;
             let ti = fract(t * (grid_fall + 0.1) + rndz);
-            let y = ti;
-            let drop_shape = mix(0.0, -0.2, ti);
-            let p = vec2<f32>((st.x - x) * a.y, (y - st.y) * a.x);
-            let d = sd_egg(p, 0.0, drop_shape);
-            let diameter = hash21(vec2<f32>(col + nrow, 4.2)) / 7.0 + 0.2;
+            let d = sd_egg(vec2<f32>(st.x - x, (ti - st.y) * 6.0), mix(0.0, -0.2, ti));
+            let diameter = fract(rnd.x + rnd.y) / 7.0 + 0.2;
             m = max(m, smoothstep(diameter / 1.5, 0.0, d));
-            let r2 = smoothstep(0.0, max(y, 1e-3), st.y);
-            let head = smoothstep(y + 0.05, y - 0.05, st.y);
-            let width = diameter * 0.75 * sqrt(max(r2, 1e-5));
-            let tr = smoothstep(width, 0.0, abs(st.x - x)) * r2 * head * 0.5;
-            trail = max(trail, tr);
+            let r2 = smoothstep(0.0, max(ti, 1e-3), st.y);
+            let gate = r2 * smoothstep(ti + 0.05, ti - 0.05, st.y);
+            if (gate > 0.0) {
+                let width = diameter * 0.75 * sqrt(max(r2, 1e-5));
+                trail = max(trail, smoothstep(width, 0.0, abs(st.x - x)) * gate * 0.5);
+            }
         }
     }
     return vec2<f32>(m, trail);
