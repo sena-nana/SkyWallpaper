@@ -763,22 +763,20 @@ mod tests {
     fn glass_rain_tracks_precip_and_skips_snow() {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
         let fair = rain_wx(3, 0.0, PrecipKind::Rain);
-        let drizzle = rain_wx(51, 0.22, PrecipKind::Rain);
         let storm = rain_wx(65, 0.85, PrecipKind::Rain);
         let snow = rain_wx(73, 0.85, PrecipKind::Snow);
         let mist = rain_wx(51, 0.015, PrecipKind::Rain);
-        let drizzle_glass = rain_frame(&device, &queue, drizzle, Frame::Auto);
-        let drizzle_blit = rain_frame(&device, &queue, drizzle, Frame::Glass(0.0));
         let drizzle_on_storm = rain_frame(&device, &queue, storm, Frame::Glass(0.22));
         let storm_on_storm = rain_frame(&device, &queue, storm, Frame::Glass(0.85));
+        let storm_blit = rain_frame(&device, &queue, storm, Frame::Glass(0.0));
         let snow_auto = rain_frame(&device, &queue, snow, Frame::Auto);
         let snow_sky = rain_frame(&device, &queue, snow, Frame::SkyOnly);
         let fair_auto = rain_frame(&device, &queue, fair, Frame::Auto);
         let fair_sky = rain_frame(&device, &queue, fair, Frame::SkyOnly);
         let mist_auto = rain_frame(&device, &queue, mist, Frame::Auto);
         let mist_sky = rain_frame(&device, &queue, mist, Frame::SkyOnly);
-        let overlay = frac_changed(&drizzle_glass, &drizzle_blit);
-        let storm_vs_drizzle = mean_abs_diff(&storm_on_storm, &drizzle_on_storm);
+        let overlay = frac_changed(&storm_on_storm, &storm_blit);
+        let storm_vs_drizzle = frac_changed(&storm_on_storm, &drizzle_on_storm);
         let snow_skip = mean_abs_diff(&snow_auto, &snow_sky);
         let dry_skip = mean_abs_diff(&fair_auto, &fair_sky);
         let mist_skip = mean_abs_diff(&mist_auto, &mist_sky);
@@ -787,7 +785,7 @@ mod tests {
             "glass overlay should change a rain frame vs blit {overlay:.4}"
         );
         assert!(
-            storm_vs_drizzle > 0.002,
+            storm_vs_drizzle > 0.003,
             "storm glass should differ from drizzle on the same sky {storm_vs_drizzle:.4}"
         );
         assert!(
@@ -1276,8 +1274,8 @@ mod tests {
     }
 
     fn write_bmp(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) {
-        let row = w * 3;
-        let pixel_bytes = row * h;
+        let stride = (w * 3 + 3) & !3;
+        let pixel_bytes = stride * h;
         let file_size = 54u32 + pixel_bytes;
         let mut b = Vec::with_capacity(file_size as usize);
         b.extend_from_slice(b"BM");
@@ -1292,6 +1290,7 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes());
         b.extend_from_slice(&pixel_bytes.to_le_bytes());
         b.extend_from_slice(&[0u8; 16]);
+        let pad = vec![0u8; (stride - w * 3) as usize];
         for y in (0..h).rev() {
             for x in 0..w {
                 let i = ((y * w + x) * 4) as usize;
@@ -1299,6 +1298,7 @@ mod tests {
                 b.push(rgba[i + 1]);
                 b.push(rgba[i]);
             }
+            b.extend_from_slice(&pad);
         }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

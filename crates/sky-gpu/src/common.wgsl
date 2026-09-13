@@ -14,6 +14,6 @@ fn view_dir(s: f32) -> vec3<f32> {
 
 fn sky_fog_amt(uv: vec2<f32>, fog: f32) -> f32 {
     let toward_horizon = 1.0 - view_dir(1.0 - uv.y).y;
-    let depth = pow(clamp(toward_horizon * 1.15 + 0.12, 0.0, 1.45), 1.15);
-    return 1.0 - exp(-fog * depth * 3.2);
+    let depth = smoothstep(0.35, 0.95, toward_horizon);
+    return 1.0 - exp(-fog * depth * 1.8);
 }

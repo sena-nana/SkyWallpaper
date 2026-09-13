@@ -1,5 +1,4 @@
-// Original MIT WGSL; Heartfelt-class wet glass (lenses, curved trails, frost).
-// Not a CC-BY-NC-SA Shadertoy port.
+// Original MIT WGSL; not a CC-BY-NC-SA Shadertoy port.
 
 struct Uniforms {
     sun_dir: vec3<f32>,
@@ -40,43 +39,76 @@ fn slide_y(phase: f32, hold: f32) -> f32 {
     return mix(creep, mix(0.05, 1.0, fall), step(h, p));
 }
 
-fn lens_h(d: f32, rad: f32) -> f32 {
-    let x = clamp(d / max(rad, 1e-4), 0.0, 1.0);
-    let b = 1.0 - x * x;
-    return b * b;
-}
-
 fn path_x(yy: f32, rnd: vec2<f32>) -> f32 {
     let wiggle = sin(yy * 5.8 + rnd.y * 4.2 + sin(yy * 2.9 + rnd.x * 3.1));
     return 0.5 + (rnd.x - 0.5) * 0.34 + wiggle * mix(0.08, 0.22, rnd.y);
 }
 
-fn static_drops(st: vec2<f32>, t: f32, amount: f32) -> f32 {
-    if (amount <= 0.0) {
-        return 0.0;
+const LENS_REF_RAD: f32 = 0.018;
+
+fn lens_grad(offset: vec2<f32>, rad: f32, vis: f32) -> vec3<f32> {
+    let r = max(rad, 1e-4);
+    let d = length(offset);
+    let x = d / r;
+    if (x >= 1.0 || vis <= 0.0) {
+        return vec3<f32>(0.0);
     }
-    let p = st * 24.0;
+    let b = 1.0 - x * x;
+    let shape = r / LENS_REF_RAD;
+    let h = b * b * vis * shape;
+    if (d < 1e-6) {
+        return vec3<f32>(h, 0.0, 0.0);
+    }
+    let dhdd = -4.0 * x * b / LENS_REF_RAD * vis;
+    return vec3<f32>(h, dhdd * offset.x / d, dhdd * offset.y / d);
+}
+
+fn smax3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    if (b.x <= 0.0) {
+        return a;
+    }
+    if (a.x <= 0.0) {
+        return b;
+    }
+    let k = 0.045;
+    let w = clamp(0.5 + 0.5 * (b.x - a.x) / k, 0.0, 1.0);
+    return vec3<f32>(
+        mix(a.x, b.x, w) + k * w * (1.0 - w),
+        mix(a.yz, b.yz, w),
+    );
+}
+
+fn static_drops(st: vec2<f32>, t: f32, amount: f32) -> vec3<f32> {
+    if (amount <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let scale = 24.0;
+    let p = st * scale;
     let origin = floor(p);
-    var h = 0.0;
+    var f = vec3<f32>(0.0);
     let density = mix(0.16, 0.52, amount);
     for (var jy = -1; jy <= 1; jy = jy + 1) {
         for (var ix = -1; ix <= 1; ix = ix + 1) {
             let cell = origin + vec2<f32>(f32(ix), f32(jy));
             let rnd = hash22(cell);
             let vis = smoothstep(0.0, 0.10, density - rnd.x)
-                * smoothstep(0.10, 0.48, 0.5 + 0.5 * sin(t * (0.30 + rnd.y * 0.52) + rnd.x * 6.28318));
+                * smoothstep(0.10, 0.48, 0.5 + 0.5 * sin(t * (0.30 + rnd.y * 0.52) + rnd.x * 6.28318))
+                * amount;
             let center = cell + 0.16 + rnd.yx * 0.68;
-            h = max(h, lens_h(length(p - center), mix(0.09, 0.20, rnd.x)) * vis);
+            let rad = mix(0.09, 0.20, rnd.x) / scale;
+            f = smax3(f, lens_grad((p - center) / scale, rad, vis));
         }
     }
-    return h * amount;
+    return f;
 }
 
-fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec2<f32> {
+fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<f32> {
     let gx = uv.x * cols;
     let origin_c = floor(gx);
-    var h = 0.0;
+    var f = vec3<f32>(0.0);
     var wet = 0.0;
+    let sx = aspect / max(cols, 1.0);
+    let sy = 1.0 / max(rows, 1.0);
     for (var ix = -1; ix <= 1; ix = ix + 1) {
         let col = origin_c + f32(ix);
         let shift = hash21(vec2<f32>(col, 2.7));
@@ -95,52 +127,43 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec2<
             let st_y = gy - nrow;
             let px = path_x(y, rnd);
             let tx = path_x(st_y, rnd);
-            let dx = (st_x - px) * (aspect / max(cols, 1.0));
-            let dy = (st_y - y) / max(rows, 1.0);
             let mass = 1.0 + falling * mix(0.16, 0.50, rnd.x);
             let rad = mix(0.011, 0.026, rnd.y) * mass * max(fade, 1e-4);
-            let drop = lens_h(length(vec2<f32>(dx, dy)), rad) * fade;
-            let tdx = (st_x - tx) * (aspect / max(cols, 1.0));
+            let drop = lens_grad(vec2<f32>((st_x - px) * sx, (st_y - y) * sy), rad, fade);
+            let tdx = (st_x - tx) * sx;
             let dist_up = clamp((y - st_y) / max(y, 1e-3), 0.0, 1.0);
             let along = smoothstep(y + 0.03, y - 0.08, st_y) * smoothstep(-0.05, 0.10, st_y);
             let trail_w = mix(0.0026, 0.0088, rnd.x) * mix(1.25, 0.16, dist_up) * mass;
-            let trail = smoothstep(trail_w, trail_w * 0.12, abs(tdx)) * along * falling * fade;
-            let bw = sin(st_y * (1.0 - clamp(st_y, 0.0, 1.0)) * mix(80.0, 140.0, rnd.y) + rnd.x * 6.28318);
-            let bead_r = mix(0.006, 0.014, rnd.x) * mass;
-            let beads = lens_h(
-                length(vec2<f32>(tdx, (fract(st_y * 9.0 + rnd.y) - 0.5) / max(rows, 1.0))),
-                bead_r,
-            ) * max(bw - 0.32, 0.0) * along * falling * fade;
-            h = max(h, max(drop, beads));
-            wet = max(wet, trail * 0.9);
+            let trail = lens_grad(vec2<f32>(tdx, 0.0), trail_w, along * falling * fade);
+            f = smax3(f, drop);
+            f = smax3(f, trail * vec3<f32>(0.35, 0.35, 0.35));
+            wet = max(wet, trail.x);
         }
     }
-    return vec2<f32>(h, wet);
+    return vec4<f32>(f, wet);
 }
 
-fn drops(uv: vec2<f32>, aspect: f32, t: f32, rain: f32) -> vec2<f32> {
+fn drops(uv: vec2<f32>, aspect: f32, t: f32, rain: f32) -> vec4<f32> {
     let st = vec2<f32>(uv.x * aspect, uv.y);
     let static_amt = smoothstep(RAIN_OVERLAY_MIN, 0.42, rain);
     let trail1 = smoothstep(0.22, 0.58, rain);
     let trail2 = smoothstep(0.45, 0.85, rain);
     let speed = mix(0.40, 1.20, rain);
-    let s = static_drops(st, u.time * 0.45, static_amt);
-    var d1 = vec2<f32>(0.0);
-    var d2 = vec2<f32>(0.0);
+    var s = static_drops(st, u.time * 0.45, static_amt);
+    var d1 = vec4<f32>(0.0);
+    var d2 = vec4<f32>(0.0);
     if (trail1 > 0.0) {
         d1 = drop_layer(uv, aspect, t * speed, 7.0, 1.0) * trail1;
     }
     if (trail2 > 0.0) {
         d2 = drop_layer(uv + vec2<f32>(0.17, 0.31), aspect, t * speed * 1.15, 12.0, 1.85) * trail2;
     }
-    let wet = max(d1.y, d2.y);
+    let wet = max(d1.w, d2.w);
     let eaten = mix(0.06, 1.0, 1.0 - smoothstep(0.04, 0.32, wet));
-    let sliding = max(d1.x, d2.x);
-    return vec2<f32>(max(s * eaten, sliding), wet);
-}
-
-fn height_of(field: vec2<f32>) -> f32 {
-    return field.x + field.y * 0.22;
+    s = s * eaten;
+    let sliding = smax3(d1.xyz, d2.xyz);
+    let h = smax3(s, sliding);
+    return vec4<f32>(h, wet);
 }
 
 fn sky_sample(uv: vec2<f32>) -> vec3<f32> {
@@ -149,21 +172,16 @@ fn sky_sample(uv: vec2<f32>) -> vec3<f32> {
 }
 
 fn frost_blur(uv: vec2<f32>) -> vec3<f32> {
-    let t = 10.0 / max(u.resolution, vec2<f32>(1.0));
-    let t2 = 22.0 / max(u.resolution, vec2<f32>(1.0));
+    let t = 12.0 / max(u.resolution, vec2<f32>(1.0));
     var c = sky_sample(uv) * 0.20;
-    c += sky_sample(uv + vec2<f32>(t.x, 0.0)) * 0.10;
-    c += sky_sample(uv - vec2<f32>(t.x, 0.0)) * 0.10;
-    c += sky_sample(uv + vec2<f32>(0.0, t.y)) * 0.10;
-    c += sky_sample(uv - vec2<f32>(0.0, t.y)) * 0.10;
-    c += sky_sample(uv + vec2<f32>(t.x, t.y)) * 0.07;
-    c += sky_sample(uv + vec2<f32>(-t.x, t.y)) * 0.07;
-    c += sky_sample(uv + vec2<f32>(t.x, -t.y)) * 0.07;
-    c += sky_sample(uv + vec2<f32>(-t.x, -t.y)) * 0.07;
-    c += sky_sample(uv + vec2<f32>(t2.x, 0.0)) * 0.03;
-    c += sky_sample(uv - vec2<f32>(t2.x, 0.0)) * 0.03;
-    c += sky_sample(uv + vec2<f32>(0.0, t2.y)) * 0.03;
-    c += sky_sample(uv - vec2<f32>(0.0, t2.y)) * 0.03;
+    c += sky_sample(uv + vec2<f32>(t.x, 0.0)) * 0.12;
+    c += sky_sample(uv - vec2<f32>(t.x, 0.0)) * 0.12;
+    c += sky_sample(uv + vec2<f32>(0.0, t.y)) * 0.12;
+    c += sky_sample(uv - vec2<f32>(0.0, t.y)) * 0.12;
+    c += sky_sample(uv + vec2<f32>(t.x, t.y)) * 0.08;
+    c += sky_sample(uv + vec2<f32>(-t.x, t.y)) * 0.08;
+    c += sky_sample(uv + vec2<f32>(t.x, -t.y)) * 0.08;
+    c += sky_sample(uv + vec2<f32>(-t.x, -t.y)) * 0.08;
     return c;
 }
 
@@ -176,33 +194,14 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
-    let t = u.time;
-    let field = drops(uv, aspect, t, rain);
-    let e = 2.0 / max(u.resolution, vec2<f32>(1.0));
-    let h = height_of(field);
-    let n0 = vec2<f32>(
-        height_of(drops(uv + vec2<f32>(e.x, 0.0), aspect, t, rain)) - h,
-        height_of(drops(uv + vec2<f32>(0.0, e.y), aspect, t, rain)) - h,
-    ) * mix(1.3, 2.4, rain);
-    let n = vec2<f32>(n0.x * 0.92 - n0.y * 0.28, n0.x * 0.28 + n0.y * 0.92);
-
-    let cover = max(
-        smoothstep(0.02, 0.18, field.x),
-        smoothstep(0.04, 0.32, field.y),
-    );
-    let sharp = sky_sample(uv + n);
-    let blur = frost_blur(uv);
-    let lum = dot(blur, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let frosted = mix(blur, vec3<f32>(lum), 0.50) * vec3<f32>(0.60, 0.66, 0.76)
-        + vec3<f32>(0.018, 0.022, 0.030);
-    let frost_amt = mix(0.40, 0.86, rain) * (1.0 - cover);
-    var col = mix(sharp, frosted, frost_amt);
-
-    let spec_n = normalize(vec3<f32>(n * 1.6, 0.72));
-    col += pow(max(dot(spec_n, normalize(vec3<f32>(-0.22, -0.72, 0.58))), 0.0), 40.0)
-        * field.x
-        * 0.055
-        * smoothstep(0.02, 0.10, length(n));
-
+    let field = drops(uv, aspect, u.time, rain);
+    let ior = mix(0.0008, 0.0022, rain);
+    let n = vec2<f32>(field.y * ior / max(aspect, 1e-4), field.z * ior);
+    let warped = uv + n;
+    let sharp = sky_sample(warped);
+    let blur = frost_blur(warped);
+    let sharp_amt = smoothstep(0.0, 0.45, max(field.x, field.w));
+    let frost = mix(0.48, 0.80, rain) * (1.0 - sharp_amt);
+    let col = mix(sharp, blur, frost);
     return vec4<f32>(clamp(col, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
