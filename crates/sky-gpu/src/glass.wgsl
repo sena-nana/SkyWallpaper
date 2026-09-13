@@ -65,7 +65,7 @@ fn sm(e0: f32, e1: f32, v: f32) -> vec2<f32> {
     return vec2<f32>(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / den);
 }
 
-fn ridge_grad(tdx: f32, rad: f32, vis: f32, dtdx_dy: f32, dvis_dy: f32) -> vec3<f32> {
+fn ridge_grad(tdx: f32, rad: f32, vis: f32, dtdx_dy: f32, dvis_dy: f32, dr_dy: f32) -> vec3<f32> {
     let r = max(rad, 1e-4);
     let x = tdx / r;
     if (abs(x) >= 1.0 || vis <= 0.0) {
@@ -75,7 +75,8 @@ fn ridge_grad(tdx: f32, rad: f32, vis: f32, dtdx_dy: f32, dvis_dy: f32) -> vec3<
     let shape = r / LENS_REF_RAD;
     let h = b * b * vis * shape;
     let dhdd = -4.0 * x * b / LENS_REF_RAD * vis;
-    return vec3<f32>(h, dhdd, dhdd * dtdx_dy + b * b * shape * dvis_dy);
+    let dh_dr = vis / LENS_REF_RAD * b * (1.0 + 3.0 * x * x);
+    return vec3<f32>(h, dhdd, dhdd * dtdx_dy + b * b * shape * dvis_dy + dh_dr * dr_dy);
 }
 
 fn lens_grad(offset: vec2<f32>, rad: f32, vis: f32) -> vec3<f32> {
@@ -154,7 +155,8 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let hold = mix(0.80, 0.90, rnd.x);
             let spd = mix(0.10, 0.26, rnd.y);
             let phase = fract(t * spd + rnd.x * 0.97);
-            let y = slide_y(phase, hold, mix(0.10, 0.38, rndb.x), mix(0.24, 0.48, rndb.y));
+            let stick = mix(0.10, 0.38, rndb.x);
+            let y = slide_y(phase, hold, stick, mix(0.24, 0.48, rndb.y));
             let vis = smoothstep(0.0, 0.14, phase) * smoothstep(1.0, 0.90, phase);
             let falling = smoothstep(hold - 0.02, hold + 0.08, phase);
             let grow = mix(0.50, 1.08, clamp(phase / max(hold, 1e-3), 0.0, 1.0));
@@ -166,16 +168,21 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let rad = mix(0.010, 0.024, rnd.y) * mass * max(vis, 1e-4);
             let drop = lens_grad(vec2<f32>((st_x - px) * sx, (st_y - y) * sy), rad, vis);
             let tdx = (st_x - tx) * sx;
-            let dist_up = clamp((y - st_y) / max(y, 1e-3), 0.0, 1.0);
-            let cap = sm(-0.04, 0.06, st_y);
+            let span = max(y - stick, 1e-3);
+            let dist_raw = (y - st_y) / span;
+            let dist_up = clamp(dist_raw, 0.0, 1.0);
+            let cap = sm(stick - 0.04, stick + 0.06, st_y);
             let head = sm(y + 0.04, y - 0.08, st_y);
             let along = cap.x * head.x;
-            let trail_w = mix(0.006, 0.016, rnd.x) * mix(1.15, 0.28, dist_up) * mass;
-            let life = vis * smoothstep(0.04, 0.14, y);
+            let w0 = mix(0.006, 0.016, rnd.x);
+            let trail_w = w0 * mix(1.15, 0.28, dist_up) * mass;
+            let life = vis * falling;
             let trail_vis = along * life;
             let dtdx_dy = -path_dx(st_y, rnd) * rows * sx;
             let dvis_dy = (cap.y * head.x + cap.x * head.y) * rows * life;
-            let trail = ridge_grad(tdx, trail_w, trail_vis, dtdx_dy, dvis_dy);
+            let tapering = select(0.0, 1.0, dist_raw > 0.0 && dist_raw < 1.0);
+            let dr_dy = tapering * w0 * mass * (0.28 - 1.15) * (-rows / span);
+            let trail = ridge_grad(tdx, trail_w, trail_vis, dtdx_dy, dvis_dy, dr_dy);
             f = smax3(f, drop);
             f = smax3(f, trail * vec3<f32>(0.55, 0.55, 0.55));
             wet = max(wet, trail_vis * mix(0.45, 1.0, 1.0 - dist_up));
@@ -183,13 +190,14 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let slot0 = floor(st_y * n_bead);
             for (var kb = -1; kb <= 1; kb = kb + 1) {
                 let slot = slot0 + f32(kb);
-                if (slot < 0.0 || slot >= n_bead || vis <= 0.0) {
+                if (slot < 0.0 || slot >= n_bead || vis <= 0.0 || falling <= 0.0) {
                     continue;
                 }
                 let br = hash22(vec2<f32>(col + 4.3, nrow + slot * 1.9));
                 let by = (slot + 0.22 + br.x * 0.56) / n_bead;
                 let sprinkle = sin(by * (1.0 - by) * 36.0 + rnd.x * 6.28318);
-                let passed = smoothstep(by - 0.03, by + 0.02, y) * smoothstep(-0.02, 0.06, by);
+                let passed = smoothstep(by - 0.03, by + 0.02, y)
+                    * smoothstep(stick - 0.02, stick + 0.06, by);
                 if (sprinkle < 0.18 || passed <= 0.0) {
                     continue;
                 }
