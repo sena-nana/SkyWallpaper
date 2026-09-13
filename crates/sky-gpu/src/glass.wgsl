@@ -47,10 +47,6 @@ fn noise2(p: vec2<f32>) -> f32 {
     );
 }
 
-fn saw01(phase: f32, split: f32) -> f32 {
-    return smoothstep(0.0, split, phase) * smoothstep(1.0, split, phase);
-}
-
 fn path(yy: f32, rnd: vec2<f32>) -> vec2<f32> {
     let x0 = (rnd.x - 0.5) * 0.50;
     let inner = yy * 0.55 + rnd.x;
@@ -152,26 +148,24 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
         for (var jy = -1; jy <= 1; jy = jy + 1) {
             let nrow = nrow0 + f32(jy);
             let rnd = hash22(vec2<f32>(col, nrow));
-            let rndb = hash22(vec2<f32>(col + 3.1, nrow + 8.7));
             let split = mix(0.80, 0.90, rnd.x);
             let phase = fract(t * mix(0.12, 0.28, rnd.y) + rnd.x * 0.97);
-            let vis = smoothstep(0.0, 0.07, phase) * smoothstep(1.0, 0.90, phase);
+            let vis = smoothstep(0.0, 0.07, phase) * smoothstep(split + 0.02, split, phase);
             if (vis <= 0.0) {
                 continue;
             }
-            let y = mix(0.07, 0.90, saw01(phase, split));
+            let y = mix(0.07, 0.90, smoothstep(0.0, split, phase));
             let st_x = gx - col;
             let st_y = gy - nrow;
-            let yy_drop = uv.y * 7.0 + y * 1.0 + rndb.x;
-            let px = path(yy_drop, rnd);
+            let path0 = uv.y * 7.0 + hash21(vec2<f32>(col + 3.1, nrow + 8.7));
+            let px = path(path0 + y, rnd);
             let mass = mix(0.88, 1.18, rnd.x);
             f = smax3(f, lens_grad(
                 vec2<f32>((st_x - px.x) * sx, (st_y - y) * sy),
                 mix(0.016, 0.034, rnd.y) * mass,
                 vis,
             ));
-            let yy = uv.y * 7.0 + st_y * 1.0 + rndb.x;
-            let tx = path(yy, rnd);
+            let tx = path(path0 + st_y, rnd);
             let span = max(y, 1e-3);
             let dist_raw = st_y / span;
             let r_env = sqrt(clamp(dist_raw, 0.0, 1.0));
@@ -181,14 +175,13 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let trail_vis = cap.x * head.x * vis;
             if (trail_vis > 0.0) {
                 let tapering = select(0.0, 1.0, dist_raw > 0.0 && dist_raw < 1.0);
-                let dyy_duv = 7.0 + 1.0 * rows;
                 let trail = ridge_grad(
                     (st_x - tx.x) * sx,
-                    max(w0 * mix(0.22, 1.0, r_env), 1e-4),
+                    w0 * mix(0.22, 1.0, r_env),
                     trail_vis,
-                    -tx.y * dyy_duv * sx,
+                    -tx.y * (7.0 + rows) * sx,
                     (cap.y * head.x + cap.x * head.y) * rows * vis,
-                    tapering * w0 * (1.0 - 0.22) * 0.5 / max(r_env * span, 1e-4) * rows,
+                    tapering * w0 * 0.78 * 0.5 / max(r_env * span, 1e-4) * rows,
                 );
                 f = smax3(f, trail);
                 wet = max(wet, trail_vis * mix(0.50, 1.0, r_env));
@@ -206,9 +199,8 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
                 if (sprinkle < 0.16 || passed <= 0.0) {
                     continue;
                 }
-                let yy_b = uv.y * 7.0 + by * 1.0 + rndb.x;
                 f = smax3(f, lens_grad(
-                    vec2<f32>((st_x - path(yy_b, rnd).x) * sx, (st_y - by) * sy),
+                    vec2<f32>((st_x - path(path0 + by, rnd).x) * sx, (st_y - by) * sy),
                     mix(0.004, 0.012, br.y) * mass,
                     vis * passed * mix(0.40, 0.90, br.y) * smoothstep(0.16, 0.52, sprinkle),
                 ));
