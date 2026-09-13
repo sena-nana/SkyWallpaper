@@ -1275,6 +1275,65 @@ mod tests {
         changed / n.max(1.0)
     }
 
+    fn write_bmp(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) {
+        let row = w * 3;
+        let pixel_bytes = row * h;
+        let file_size = 54u32 + pixel_bytes;
+        let mut b = Vec::with_capacity(file_size as usize);
+        b.extend_from_slice(b"BM");
+        b.extend_from_slice(&file_size.to_le_bytes());
+        b.extend_from_slice(&[0u8; 4]);
+        b.extend_from_slice(&54u32.to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&24u16.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&pixel_bytes.to_le_bytes());
+        b.extend_from_slice(&[0u8; 16]);
+        for y in (0..h).rev() {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                b.push(rgba[i + 2]);
+                b.push(rgba[i + 1]);
+                b.push(rgba[i]);
+            }
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(path, b).expect("write rain dump");
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_precip_looks() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/rain-dump");
+        let dump = |name: &str, alt: f64, weather: SkyWeather| {
+            let px = pixels(&device, &queue, alt, 0.5, weather, 2.4, 960, 540, Frame::Auto);
+            write_bmp(&dir.join(name), &px, 960, 540);
+        };
+        dump("drizzle.bmp", 38.0, rain_wx(51, 0.22, PrecipKind::Rain));
+        dump("light.bmp", 38.0, rain_wx(61, 0.45, PrecipKind::Rain));
+        dump("storm.bmp", 38.0, rain_wx(65, 0.85, PrecipKind::Rain));
+        dump("storm-dusk.bmp", 2.0, rain_wx(65, 0.85, PrecipKind::Rain));
+        dump("snow.bmp", 38.0, rain_wx(73, 0.85, PrecipKind::Snow));
+        dump(
+            "fog.bmp",
+            38.0,
+            SkyWeather {
+                code: WeatherCode(45),
+                cloud_cover: 0.55,
+                precip: 0.0,
+                precip_kind: PrecipKind::Rain,
+                fog: 0.85,
+                thunder: false,
+            },
+        );
+    }
+
     fn mean_abs_diff(a: &[u8], b: &[u8]) -> f32 {
         assert_eq!(a.len(), b.len());
         let mut acc = 0.0f32;
