@@ -30,32 +30,19 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p[vid], 0.0, 1.0);
 }
 
-fn slide_y(phase: f32, hold: f32, stick: f32, travel: f32) -> f32 {
-    let p = clamp(phase, 0.0, 1.0);
-    let h = clamp(hold, 0.78, 0.92);
-    let s = clamp(stick, 0.08, 0.45);
-    let tr = clamp(travel, 0.22, 0.55);
-    let creep = s * (0.70 + 0.30 * p / max(h, 1e-3));
-    let f = clamp((p - h) / max(1.0 - h, 1e-3), 0.0, 1.0);
-    let fall = f * f * (1.15 - 0.15 * f);
-    return mix(creep, s + tr * fall, step(h, p));
-}
-
-fn path_x(yy: f32, rnd: vec2<f32>) -> f32 {
-    let x0 = (rnd.x - 0.5) * 0.55;
-    let wiggle = sin(yy * 2.2 + rnd.y * 1.4 + sin(yy * 1.3 + rnd.x));
-    let amp = mix(0.16, 0.38, rnd.y);
-    return 0.5 + x0 + wiggle * amp * (0.55 + 0.9 * (0.5 - abs(x0)));
-}
-
 const LENS_REF_RAD: f32 = 0.018;
 
-fn path_dx(yy: f32, rnd: vec2<f32>) -> f32 {
+fn slide_y(phase: f32, hold: f32, stick: f32, travel: f32) -> f32 {
+    let f = clamp((phase - hold) / max(1.0 - hold, 1e-3), 0.0, 1.0);
+    return stick + travel * f * f * (1.15 - 0.15 * f);
+}
+
+fn path(yy: f32, rnd: vec2<f32>) -> vec2<f32> {
     let x0 = (rnd.x - 0.5) * 0.55;
     let inner = yy * 1.3 + rnd.x;
     let arg = yy * 2.2 + rnd.y * 1.4 + sin(inner);
     let amp = mix(0.16, 0.38, rnd.y) * (0.55 + 0.9 * (0.5 - abs(x0)));
-    return cos(arg) * (2.2 + 1.3 * cos(inner)) * amp;
+    return vec2<f32>(0.5 + x0 + sin(arg) * amp, cos(arg) * (2.2 + 1.3 * cos(inner)) * amp);
 }
 
 fn sm(e0: f32, e1: f32, v: f32) -> vec2<f32> {
@@ -65,35 +52,35 @@ fn sm(e0: f32, e1: f32, v: f32) -> vec2<f32> {
     return vec2<f32>(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / den);
 }
 
+fn bump(x: f32, vis: f32, r: f32) -> vec2<f32> {
+    if (abs(x) >= 1.0 || vis <= 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let b = 1.0 - x * x;
+    let k = vis / LENS_REF_RAD;
+    return vec2<f32>(b * b * k * r, -4.0 * x * b * k);
+}
+
 fn ridge_grad(tdx: f32, rad: f32, vis: f32, dtdx_dy: f32, dvis_dy: f32, dr_dy: f32) -> vec3<f32> {
     let r = max(rad, 1e-4);
     let x = tdx / r;
-    if (abs(x) >= 1.0 || vis <= 0.0) {
+    let p = bump(x, vis, r);
+    if (p.x <= 0.0) {
         return vec3<f32>(0.0);
     }
     let b = 1.0 - x * x;
-    let shape = r / LENS_REF_RAD;
-    let h = b * b * vis * shape;
-    let dhdd = -4.0 * x * b / LENS_REF_RAD * vis;
     let dh_dr = vis / LENS_REF_RAD * b * (1.0 + 3.0 * x * x);
-    return vec3<f32>(h, dhdd, dhdd * dtdx_dy + b * b * shape * dvis_dy + dh_dr * dr_dy);
+    return vec3<f32>(p.x, p.y, p.y * dtdx_dy + p.x / vis * dvis_dy + dh_dr * dr_dy);
 }
 
 fn lens_grad(offset: vec2<f32>, rad: f32, vis: f32) -> vec3<f32> {
     let r = max(rad, 1e-4);
     let d = length(offset);
-    let x = d / r;
-    if (x >= 1.0 || vis <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let b = 1.0 - x * x;
-    let shape = r / LENS_REF_RAD;
-    let h = b * b * vis * shape;
+    let p = bump(d / r, vis, r);
     if (d < 1e-6) {
-        return vec3<f32>(h, 0.0, 0.0);
+        return vec3<f32>(p.x, 0.0, 0.0);
     }
-    let dhdd = -4.0 * x * b / LENS_REF_RAD * vis;
-    return vec3<f32>(h, dhdd * offset.x / d, dhdd * offset.y / d);
+    return vec3<f32>(p.x, p.y * offset.x / d, p.y * offset.y / d);
 }
 
 fn smax3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
@@ -153,62 +140,62 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let rnd = hash22(vec2<f32>(col, nrow));
             let rndb = hash22(vec2<f32>(col + 3.1, nrow + 8.7));
             let hold = mix(0.80, 0.90, rnd.x);
-            let spd = mix(0.10, 0.26, rnd.y);
-            let phase = fract(t * spd + rnd.x * 0.97);
+            let phase = fract(t * mix(0.10, 0.26, rnd.y) + rnd.x * 0.97);
+            let vis = smoothstep(0.0, 0.14, phase) * smoothstep(1.0, 0.90, phase);
+            if (vis <= 0.0) {
+                continue;
+            }
             let stick = mix(0.10, 0.38, rndb.x);
             let y = slide_y(phase, hold, stick, mix(0.24, 0.48, rndb.y));
-            let vis = smoothstep(0.0, 0.14, phase) * smoothstep(1.0, 0.90, phase);
             let falling = smoothstep(hold - 0.02, hold + 0.08, phase);
-            let grow = mix(0.50, 1.08, clamp(phase / max(hold, 1e-3), 0.0, 1.0));
+            let grow = mix(0.50, 1.08, clamp(phase / hold, 0.0, 1.0));
             let st_x = gx - col;
             let st_y = gy - nrow;
-            let px = path_x(y, rnd);
-            let tx = path_x(st_y, rnd);
+            let px = path(y, rnd);
             let mass = grow + falling * mix(0.06, 0.22, rnd.x);
-            let rad = mix(0.010, 0.024, rnd.y) * mass * max(vis, 1e-4);
-            let drop = lens_grad(vec2<f32>((st_x - px) * sx, (st_y - y) * sy), rad, vis);
-            let tdx = (st_x - tx) * sx;
+            f = smax3(f, lens_grad(vec2<f32>((st_x - px.x) * sx, (st_y - y) * sy), mix(0.010, 0.024, rnd.y) * mass, vis));
+            if (falling <= 0.0) {
+                continue;
+            }
+            let tx = path(st_y, rnd);
             let span = max(y - stick, 1e-3);
             let dist_raw = (y - st_y) / span;
             let dist_up = clamp(dist_raw, 0.0, 1.0);
             let cap = sm(stick - 0.04, stick + 0.06, st_y);
             let head = sm(y + 0.04, y - 0.08, st_y);
-            let along = cap.x * head.x;
             let w0 = mix(0.006, 0.016, rnd.x);
-            let trail_w = w0 * mix(1.15, 0.28, dist_up) * mass;
             let life = vis * falling;
-            let trail_vis = along * life;
-            let dtdx_dy = -path_dx(st_y, rnd) * rows * sx;
-            let dvis_dy = (cap.y * head.x + cap.x * head.y) * rows * life;
+            let trail_vis = cap.x * head.x * life;
             let tapering = select(0.0, 1.0, dist_raw > 0.0 && dist_raw < 1.0);
-            let dr_dy = tapering * w0 * mass * (0.28 - 1.15) * (-rows / span);
-            let trail = ridge_grad(tdx, trail_w, trail_vis, dtdx_dy, dvis_dy, dr_dy);
-            f = smax3(f, drop);
+            let trail = ridge_grad(
+                (st_x - tx.x) * sx,
+                w0 * mix(1.15, 0.28, dist_up) * mass,
+                trail_vis,
+                -tx.y * rows * sx,
+                (cap.y * head.x + cap.x * head.y) * rows * life,
+                tapering * w0 * mass * (0.28 - 1.15) * (-rows / span),
+            );
             f = smax3(f, trail * vec3<f32>(0.55, 0.55, 0.55));
             wet = max(wet, trail_vis * mix(0.45, 1.0, 1.0 - dist_up));
-            let n_bead = 8.0;
-            let slot0 = floor(st_y * n_bead);
+            let slot0 = floor(st_y * 8.0);
             for (var kb = -1; kb <= 1; kb = kb + 1) {
                 let slot = slot0 + f32(kb);
-                if (slot < 0.0 || slot >= n_bead || vis <= 0.0 || falling <= 0.0) {
+                if (slot < 0.0 || slot >= 8.0) {
                     continue;
                 }
                 let br = hash22(vec2<f32>(col + 4.3, nrow + slot * 1.9));
-                let by = (slot + 0.22 + br.x * 0.56) / n_bead;
+                let by = (slot + 0.22 + br.x * 0.56) / 8.0;
                 let sprinkle = sin(by * (1.0 - by) * 36.0 + rnd.x * 6.28318);
                 let passed = smoothstep(by - 0.03, by + 0.02, y)
                     * smoothstep(stick - 0.02, stick + 0.06, by);
                 if (sprinkle < 0.18 || passed <= 0.0) {
                     continue;
                 }
-                let bx = path_x(by, rnd);
-                let brad = mix(0.0035, 0.010, br.y) * mass;
-                let bead = lens_grad(
-                    vec2<f32>((st_x - bx) * sx, (st_y - by) * sy),
-                    brad,
+                f = smax3(f, lens_grad(
+                    vec2<f32>((st_x - path(by, rnd).x) * sx, (st_y - by) * sy),
+                    mix(0.0035, 0.010, br.y) * mass,
                     vis * passed * mix(0.40, 0.90, br.y) * smoothstep(0.18, 0.55, sprinkle),
-                );
-                f = smax3(f, bead);
+                ));
             }
         }
     }
