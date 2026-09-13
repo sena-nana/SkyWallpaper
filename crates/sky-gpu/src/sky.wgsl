@@ -421,11 +421,11 @@ fn snow(uv: vec2<f32>) -> f32 {
     var acc = 0.0;
     for (var i = 0; i < 5; i = i + 1) {
         let fi = f32(i);
-        let near = mix(0.32, 1.0, 1.0 - fi / 4.0);
-        let scale = mix(8.0, 28.0, fi / 4.0);
-        let fall = mix(0.14, 0.52, near);
+        let near = mix(0.28, 1.0, 1.0 - fi / 4.0);
+        let scale = mix(5.5, 30.0, fi / 4.0);
+        let fall = mix(0.12, 0.48, near);
         let shear = mix(-0.16, 0.20, hash21(vec2<f32>(fi, 2.1)));
-        let wind = mix(0.10, 0.34, near);
+        let wind = mix(0.08, 0.30, near);
         var p = st * scale + vec2<f32>(fi * 5.1, fi * 2.3);
         p.y -= u.time * fall;
         let omega = 0.28 + fi * 0.11;
@@ -436,19 +436,20 @@ fn snow(uv: vec2<f32>) -> f32 {
         let rnd = hash22(cell + vec2<f32>(fi * 5.3, 1.9));
         let edge = smoothstep(vec2<f32>(0.0), vec2<f32>(0.12), fp)
             * smoothstep(vec2<f32>(1.0), vec2<f32>(0.88), fp);
-        let vis = step(rnd.x, mix(0.12, 0.60, amt)) * near * edge.x * edge.y;
-        let q = fp - 0.5 - (rnd - 0.5) * 0.28;
+        let vis = step(rnd.x, mix(0.10, 0.50, amt)) * edge.x * edge.y;
+        let q = fp - 0.5 - (rnd - 0.5) * 0.30;
         let wind_v = cos(phase) * (omega - 0.38 * fall) * wind;
         let vel = normalize(vec2<f32>(-shear * fall + wind_v, -fall));
         let across = abs(q.x * vel.y - q.y * vel.x);
         let along = q.x * vel.x + q.y * vel.y;
-        let streak = mix(1.7, 3.4, near);
-        let rad = mix(0.035, 0.12, rnd.y) * mix(0.42, 1.0, near);
-        let d = length(vec2<f32>(across, along / streak));
+        let squash = mix(1.0, 1.28, near);
+        let rad = mix(0.055, 0.20, rnd.y) * mix(0.32, 1.12, near);
+        let d = length(vec2<f32>(across, along / squash));
         let x = clamp(1.0 - d / max(rad, 1e-4), 0.0, 1.0);
-        acc += x * x * vis * mix(0.42, 1.0, near);
+        let soft = x * x * (3.0 - 2.0 * x);
+        acc += soft * vis * mix(0.14, 0.52, near);
     }
-    return clamp(acc, 0.0, 1.6) * mix(0.50, 1.0, amt);
+    return clamp(acc, 0.0, 1.15) * mix(0.45, 1.0, amt);
 }
 
 @vertex
@@ -506,16 +507,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         * mix(2.2, 1.4, day);
 
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
-    col += flake * snow(uv) * 0.85;
+    col += flake * snow(uv) * 0.62;
 
     let wisp = mix(
         fbm(vec2<f32>(uv.x * 2.6, uv.y * 3.4) + vec2<f32>(u.time * 0.022, u.time * 0.014)),
         fbm(vec2<f32>(uv.x * 1.05, uv.y * 1.35) + vec2<f32>(u.time * 0.010, -u.time * 0.007)),
         0.55,
     );
-    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.38, 1.55, wisp), 0.0, 1.0);
-    let haze = mix(stops.horizon, vec3<f32>(luma3(stops.horizon)), mix(0.12, 0.42, day));
-    let fog_col = mix(look, haze, 0.82);
+    let band = fbm(vec2<f32>(uv.x * 1.7, uv.y * 0.65) + vec2<f32>(u.time * 0.008, u.time * 0.004));
+    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.70, 1.38, wisp) * mix(0.88, 1.16, band), 0.0, 1.0);
+    let hz = luma3(stops.horizon);
+    let haze = mix(stops.horizon, vec3<f32>(hz + 0.12), mix(0.42, 0.76, day));
+    let fog_col = mix(look, haze, 0.94);
     col = mix(col, fog_col, fog_amt);
     col += (hash21(in.pos.xy) - 0.5) * 0.004;
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
