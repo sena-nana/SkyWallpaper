@@ -25,7 +25,7 @@ const Y_STRETCH: f32 = 12.0;
 const SLOTS: i32 = 3;
 const PANE_END: f32 = 1.18;
 const LOOKBACK: i32 = 3;
-const CAND_MAX: i32 = 60;
+const CAND_MAX: i32 = 84;
 
 struct Drop {
     valid: f32,
@@ -264,9 +264,9 @@ fn drop_at(col: i32, slot: i32, cycle: i32, t: f32) -> Drop {
 fn drops(uv: vec2<f32>, aspect: f32, t: f32) -> vec2<f32> {
     let px = pane_x(uv.x, aspect);
     let col0 = i32(floor(px * COLS));
-    var cand: array<Drop, 60>;
+    var cand: array<Drop, 84>;
     var n = 0;
-    for (var dc = -2; dc <= 2; dc = dc + 1) {
+    for (var dc = -3; dc <= 3; dc = dc + 1) {
         for (var slot = 0; slot < SLOTS; slot = slot + 1) {
             let oc = current_cycle(col0 + dc, slot, t);
             for (var g = 0; g <= LOOKBACK; g = g + 1) {
@@ -294,8 +294,8 @@ fn drops(uv: vec2<f32>, aspect: f32, t: f32) -> vec2<f32> {
             k = k - 1;
         }
     }
-    var eater: array<i32, 60>;
-    var eaten_at: array<f32, 60>;
+    var eater: array<i32, 84>;
+    var eaten_at: array<f32, 84>;
     for (var i = 0; i < CAND_MAX; i = i + 1) {
         eater[i] = -1;
         eaten_at[i] = -1.0;
