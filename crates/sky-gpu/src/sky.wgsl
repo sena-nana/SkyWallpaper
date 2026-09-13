@@ -259,50 +259,56 @@ fn mesh_look(uv: vec2<f32>, stops: SkyStops, mesh: MeshLayout, alt_deg: f32) -> 
     return mix_oklab(col, sunset_bias(well_col), w1 * twilight * 0.35);
 }
 
-fn star_layer(uv: vec2<f32>, t: f32) -> vec3<f32> {
-    let gid = floor(uv);
-    let gv = fract(uv) - 0.5;
-    var col = vec3<f32>(0.0);
-    for (var y = -1; y <= 1; y = y + 1) {
-        for (var x = -1; x <= 1; x = x + 1) {
-            let offs = vec2<f32>(f32(x), f32(y));
-            let cell = gid + offs;
-            let n = hash21(cell);
-            let size = fract(n * 13.51);
-            if (size < 0.68) {
-                continue;
-            }
-            let p = gv - offs - (hash22(cell) - 0.5);
-            let d = max(length(p), 1e-4);
-            let sx = smoothstep(0.032, 0.0, abs(p.x)) * smoothstep(0.40, 0.0, abs(p.y));
-            let sy = smoothstep(0.032, 0.0, abs(p.y)) * smoothstep(0.40, 0.0, abs(p.x));
-            let core = (0.016 / d + max(sx, sy) * smoothstep(0.94, 0.995, size) * 0.40)
-                * smoothstep(0.46, 0.09, d);
-            let temp = fract(n * 7.13);
-            let tint = mix(
-                mix(vec3<f32>(0.72, 0.84, 1.00), vec3<f32>(0.96, 0.97, 1.00), smoothstep(0.12, 0.52, temp)),
-                vec3<f32>(1.00, 0.88, 0.68),
-                smoothstep(0.78, 0.96, temp),
-            );
-            let tw = 0.80 + 0.20 * sin(t * (1.05 + n * 2.6) + n * 17.0);
-            col += tint * core * (0.30 + 0.95 * (size - 0.68) / 0.32) * tw;
-        }
+// One-cell sampling keeps the star field inexpensive. Jitter is kept inside
+// the cell so the layer has no neighbor loop or high-frequency popping.
+fn star_points(p: vec2<f32>, scale: f32, threshold: f32, seed: f32, t: f32, strength: f32) -> vec3<f32> {
+    let q = p * scale;
+    let cell = floor(q);
+    let local = fract(q) - 0.5;
+    let n = hash21(cell + vec2<f32>(seed, seed * 1.71));
+    if (n < threshold) {
+        return vec3<f32>(0.0);
     }
-    return col;
+    // Keep the complete halo inside the cell: max jitter (0.15) + halo radius
+    // (0.28) stays below the 0.5 cell edge, so drift cannot clip a star.
+    let jitter = (hash22(cell + vec2<f32>(seed * 2.3, 4.7)) - 0.5) * 0.30;
+    let d = length(local - jitter);
+    let rank = pow((n - threshold) / max(1.0 - threshold, 1e-4), 0.34);
+    let core = smoothstep(0.17, 0.015, d) * (0.48 + 0.90 * rank);
+    let halo = smoothstep(0.28, 0.04, d) * (0.06 + 0.12 * rank);
+    let temp = fract(n * 8.17 + seed * 0.13);
+    let tint = mix(
+        vec3<f32>(0.70, 0.82, 1.00),
+        vec3<f32>(1.00, 0.91, 0.74),
+        smoothstep(0.72, 0.98, temp),
+    );
+    let breath = 0.97 + 0.03 * sin(t * 0.18 + n * 6.2831853);
+    return tint * (core + halo) * rank * strength * breath;
 }
 
-fn stars(uv: vec2<f32>, night: f32) -> vec3<f32> {
+fn stars(uv: vec2<f32>, night: f32, well: vec2<f32>) -> vec3<f32> {
     if (night <= 0.0) {
         return vec3<f32>(0.0);
     }
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
-    let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y);
+    let drift = vec2<f32>(u.time * 0.00075, sin(u.time * 0.00031) * 0.012);
+    let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.52) + drift;
     let horizon = smoothstep(0.04, 0.24, uv.y);
+    let axis = normalize(vec2<f32>(1.0, 0.10 + (well.x - 0.5) * 0.18));
+    let across_axis = vec2<f32>(-axis.y, axis.x);
+    let along = dot(p, axis);
+    let across = dot(p, across_axis);
+    let bend = 0.055 * sin(along * 2.4 + well.y * 5.0);
+    let ribbon = exp(-pow((across - bend) * 4.2, 2.0));
+    let secondary = exp(-pow((across + 0.26 + bend * 0.4) * 2.5, 2.0)) * 0.26;
+    let dust_noise = 0.72 + 0.28 * noise2(vec2<f32>(along * 1.6, across * 2.7) + drift * 0.35);
+    let dust = (ribbon + secondary) * dust_noise;
+
     var col = vec3<f32>(0.0);
-    col += star_layer(p * 15.0, u.time);
-    col += star_layer(p * 27.0 + vec2<f32>(19.7, 8.1), u.time * 1.07) * 0.58;
-    col += star_layer(p * 43.0 + vec2<f32>(5.3, 23.9), u.time * 0.91) * 0.34;
-    return col * night * horizon * 0.70;
+    col += vec3<f32>(0.38, 0.48, 0.86) * dust * (0.050 + 0.040 * night);
+    col += star_points(p + vec2<f32>(4.1, 9.7), 12.0, 0.925, 1.7, u.time, 0.92);
+    col += star_points(p + vec2<f32>(17.3, 2.4), 31.0, 0.84, 8.9, u.time, 0.17);
+    return col * night * horizon;
 }
 
 fn luma3(c: vec3<f32>) -> f32 {
@@ -371,7 +377,12 @@ fn clouds(uv: vec2<f32>) -> vec2<f32> {
     let warp = fbm(p0 * 0.45 + vec2<f32>(t * 0.18, 0.04)) - 0.5;
     let w = vec2<f32>(warp * 0.38, warp * 0.06);
     let n1 = fbm(p0 * 0.62 + w + vec2<f32>(t * 0.90, t * 0.22));
-    let n2 = fbm(cloud_uv(uv, 0.14) * 1.25 + w * 0.65 + vec2<f32>(t * 1.40, -t * 0.16));
+    // The second octave adds edge detail only once coverage is meaningful.
+    // Skipping it for sparse clouds removes a costly fbm chain from most clear frames.
+    var n2 = n1;
+    if (cover > 0.28) {
+        n2 = fbm(cloud_uv(uv, 0.14) * 1.25 + w * 0.65 + vec2<f32>(t * 1.40, -t * 0.16));
+    }
 
     let threshold = mix(0.64, 0.20, cover);
     let softness = mix(0.22, 0.38, cover);
@@ -419,7 +430,13 @@ fn snow(uv: vec2<f32>) -> f32 {
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
     let st = vec2<f32>(uv.x * aspect, uv.y);
     var acc = 0.0;
+    // Far layers are visually useful at low intensity; add near layers only as
+    // precipitation rises. This keeps drizzle cheap while preserving blizzard depth.
+    let layers = i32(round(mix(2.0, 5.0, amt)));
     for (var i = 0; i < 5; i = i + 1) {
+        if (i >= layers) {
+            break;
+        }
         let fi = f32(i);
         let near = mix(0.28, 1.0, 1.0 - fi / 4.0);
         let scale = mix(5.5, 30.0, fi / 4.0);
@@ -488,7 +505,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     col = weather_grade(col, look, stops, sun.y);
 
     let night = smoothstep(-0.02, -0.30, sun.y);
-    col += stars(sky_uv, night * (1.0 - u.cloud_cover * 0.85));
+    col += stars(sky_uv, night * (1.0 - u.cloud_cover * 0.85), mesh.well);
 
     let cld = clouds(sky_uv);
     let day = smoothstep(-0.15, 0.28, sun.y);
@@ -503,13 +520,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.62;
 
-    let wisp = mix(
-        fbm(vec2<f32>(uv.x * 2.6, uv.y * 3.4) + vec2<f32>(u.time * 0.022, u.time * 0.014)),
-        fbm(vec2<f32>(uv.x * 1.05, uv.y * 1.35) + vec2<f32>(u.time * 0.010, -u.time * 0.007)),
-        0.55,
-    );
-    let band = fbm(vec2<f32>(uv.x * 1.7, uv.y * 0.65) + vec2<f32>(u.time * 0.008, u.time * 0.004));
-    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.70, 1.38, wisp) * mix(0.88, 1.16, band), 0.0, 1.0);
+    var fog_amt = sky_fog_amt(uv, u.fog);
+    if (u.fog > 0.08) {
+        let fog_noise = fbm(vec2<f32>(uv.x * 1.7, uv.y * 1.35) + vec2<f32>(u.time * 0.012, u.time * 0.006));
+        fog_amt *= mix(0.78, 1.22, fog_noise);
+    }
+    fog_amt = clamp(fog_amt, 0.0, 1.0);
     let hz = luma3(stops.horizon);
     let haze = mix(stops.horizon, vec3<f32>(hz + 0.16), mix(0.50, 0.82, day));
     let fog_col = mix(look, haze, 0.96);

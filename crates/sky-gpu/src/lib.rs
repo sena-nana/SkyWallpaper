@@ -867,6 +867,103 @@ mod tests {
     }
 
     #[test]
+    fn stars_have_background_depth_without_speckle_noise() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let clear = SkyWeather::clear_fallback();
+        const W: u32 = 160;
+        const H: u32 = 90;
+        let night = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            clear,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let peaks = isolated_peaks(&night, W, H, 0.12, 0.34);
+        let mid = count_luma_above(&night, W, H, 0.18, 0.72, 0.24);
+        let bright = count_luma_above(&night, W, H, 0.18, 0.72, 0.52);
+        assert!(
+            peaks >= 5,
+            "layered night should keep identifiable stars, got {peaks}"
+        );
+        assert!(peaks <= 90, "main stars should remain sparse, got {peaks}");
+        assert!(
+            mid > bright * 3,
+            "background should dominate bright cores: mid={mid} bright={bright}"
+        );
+        assert!(
+            sharp_edge_frac(&night, W, H, 0.20) < 0.10,
+            "star field should use soft material edges rather than hard speckles"
+        );
+    }
+
+    #[test]
+    fn stars_drift_slowly_and_keep_a_continuous_band() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let clear = SkyWeather::clear_fallback();
+        const W: u32 = 160;
+        const H: u32 = 90;
+        let t0 = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            clear,
+            12.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let t_short = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            clear,
+            12.5,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let t_long = pixels(
+            &device,
+            &queue,
+            -30.0,
+            0.5,
+            clear,
+            900.0,
+            W,
+            H,
+            Frame::SkyOnly,
+        );
+        let peaks_0 = isolated_peak_positions(&t0, W, H, 0.12, 0.34);
+        let peaks_short = isolated_peak_positions(&t_short, W, H, 0.12, 0.34);
+        let peaks_long = isolated_peak_positions(&t_long, W, H, 0.12, 0.34);
+        let short_overlap = peak_overlap(&peaks_0, &peaks_short, 2);
+        let long_overlap = peak_overlap(&peaks_0, &peaks_long, 2);
+        assert!(
+            short_overlap > 0.55,
+            "short drift should preserve star positions: overlap={short_overlap:.2}"
+        );
+        assert!(
+            long_overlap < short_overlap * 0.85,
+            "long drift should move the star positions: short={short_overlap:.2} long={long_overlap:.2}"
+        );
+
+        let upper = region_luma(&t0, W, H, 0.14, 0.34);
+        let ribbon = band_luma(&t0, W, H);
+        let lower = region_luma(&t0, W, H, 0.66, 0.78);
+        assert!(
+            (ribbon - upper).abs() > 0.004 || (ribbon - lower).abs() > 0.004,
+            "star dust should form a broad composition band: upper={upper:.4} ribbon={ribbon:.4} lower={lower:.4}"
+        );
+    }
+
+    #[test]
     fn thunder_lights_cloud_gaps_not_a_bolt() {
         let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
         let storm = thunder_wx(0.95, 0.0);
@@ -1521,6 +1618,41 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore]
+    fn dump_star_looks() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/star-dump");
+        let dump = |name: &str, alt: f64, weather: SkyWeather| {
+            let px = pixels(
+                &device,
+                &queue,
+                alt,
+                0.5,
+                weather,
+                12.0,
+                960,
+                540,
+                Frame::SkyOnly,
+            );
+            write_bmp(&dir.join(name), &px, 960, 540);
+        };
+        dump("night-clear.bmp", -30.0, SkyWeather::clear_fallback());
+        dump("dusk-clear.bmp", -6.0, SkyWeather::clear_fallback());
+        dump(
+            "night-cloud.bmp",
+            -30.0,
+            SkyWeather {
+                code: WeatherCode(3),
+                cloud_cover: 0.72,
+                precip: 0.0,
+                precip_kind: PrecipKind::Rain,
+                fog: 0.0,
+                thunder: false,
+            },
+        );
+    }
+
     fn mean_abs_diff(a: &[u8], b: &[u8]) -> f32 {
         assert_eq!(a.len(), b.len());
         let mut acc = 0.0f32;
@@ -1533,6 +1665,16 @@ mod tests {
     }
 
     fn isolated_peaks(rgba: &[u8], width: u32, height: u32, margin: f32, floor: f32) -> u32 {
+        isolated_peak_positions(rgba, width, height, margin, floor).len() as u32
+    }
+
+    fn isolated_peak_positions(
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        margin: f32,
+        floor: f32,
+    ) -> Vec<(u32, u32)> {
         let luma_at = |x: u32, y: u32| {
             let i = ((y * width + x) * 4) as usize;
             luma([
@@ -1542,7 +1684,7 @@ mod tests {
             ])
         };
         let y_max = (height as f32 * 0.78) as u32;
-        let mut n = 0u32;
+        let mut peaks = Vec::new();
         for y in 1..y_max.saturating_sub(1).max(1) {
             for x in 1..width - 1 {
                 let l = luma_at(x, y);
@@ -1562,11 +1704,29 @@ mod tests {
                     }
                 }
                 if l > neigh + margin {
-                    n += 1;
+                    peaks.push((x, y));
                 }
             }
         }
-        n
+        peaks
+    }
+
+    fn peak_overlap(a: &[(u32, u32)], b: &[(u32, u32)], radius: u32) -> f32 {
+        if a.is_empty() {
+            return 0.0;
+        }
+        let radius_sq = radius * radius;
+        let matched = a
+            .iter()
+            .filter(|&&(x, y)| {
+                b.iter().any(|&(bx, by)| {
+                    let dx = x.abs_diff(bx);
+                    let dy = y.abs_diff(by);
+                    dx * dx + dy * dy <= radius_sq
+                })
+            })
+            .count();
+        matched as f32 / a.len() as f32
     }
 
     fn band_luma(rgba: &[u8], width: u32, height: u32) -> f32 {
@@ -1586,6 +1746,45 @@ mod tests {
             }
         }
         acc / n.max(1.0)
+    }
+
+    fn region_luma(rgba: &[u8], width: u32, height: u32, y0: f32, y1: f32) -> f32 {
+        let start = (height as f32 * y0) as u32;
+        let end = (height as f32 * y1) as u32;
+        let mut acc = 0.0f32;
+        let mut n = 0.0f32;
+        for y in start..end.max(start + 1).min(height) {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                acc += luma([
+                    f32::from(rgba[i]) / 255.0,
+                    f32::from(rgba[i + 1]) / 255.0,
+                    f32::from(rgba[i + 2]) / 255.0,
+                ]);
+                n += 1.0;
+            }
+        }
+        acc / n.max(1.0)
+    }
+
+    fn count_luma_above(rgba: &[u8], width: u32, height: u32, y0: f32, y1: f32, floor: f32) -> u32 {
+        let start = (height as f32 * y0) as u32;
+        let end = (height as f32 * y1) as u32;
+        let mut n = 0u32;
+        for y in start..end.max(start + 1).min(height) {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                let value = luma([
+                    f32::from(rgba[i]) / 255.0,
+                    f32::from(rgba[i + 1]) / 255.0,
+                    f32::from(rgba[i + 2]) / 255.0,
+                ]);
+                if value > floor {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     fn sharp_edge_frac(rgba: &[u8], width: u32, height: u32, jump: f32) -> f32 {
