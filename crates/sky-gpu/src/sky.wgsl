@@ -419,10 +419,10 @@ fn snow(uv: vec2<f32>) -> f32 {
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
     let st = vec2<f32>(uv.x * aspect, uv.y);
     var acc = 0.0;
-    for (var i = 0; i < 4; i = i + 1) {
+    for (var i = 0; i < 5; i = i + 1) {
         let fi = f32(i);
-        let near = mix(0.32, 1.0, 1.0 - fi / 3.0);
-        let scale = mix(8.0, 26.0, fi / 3.0);
+        let near = mix(0.32, 1.0, 1.0 - fi / 4.0);
+        let scale = mix(8.0, 28.0, fi / 4.0);
         let fall = mix(0.14, 0.52, near);
         let shear = mix(-0.16, 0.20, hash21(vec2<f32>(fi, 2.1)));
         let wind = mix(0.10, 0.34, near);
@@ -431,8 +431,13 @@ fn snow(uv: vec2<f32>) -> f32 {
         let omega = 0.28 + fi * 0.11;
         let phase = p.y * 0.38 + u.time * omega + fi;
         p.x += p.y * shear + sin(phase) * wind;
-        let rnd = hash22(floor(p) + vec2<f32>(fi * 5.3, 1.9));
-        let vis = step(rnd.x, mix(0.12, 0.60, amt)) * near;
+        let cell = floor(p);
+        let fy = fract(p).y;
+        let rnd = hash22(cell + vec2<f32>(fi * 5.3, 1.9));
+        let vis = step(rnd.x, mix(0.12, 0.60, amt))
+            * near
+            * smoothstep(0.0, 0.12, fy)
+            * smoothstep(1.0, 0.88, fy);
         let q = fract(p) - 0.5 - (rnd - 0.5) * 0.28;
         let wind_v = cos(phase) * (omega - 0.38 * fall) * wind;
         let vel = normalize(vec2<f32>(-shear * fall + wind_v, -fall));
@@ -504,8 +509,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
 
-    let wisp = fbm(vec2<f32>(uv.x * 1.3, uv.y * 1.8) + vec2<f32>(u.time * 0.022, u.time * 0.014));
-    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.72, 1.22, wisp), 0.0, 1.0);
+    let wisp_a = fbm(vec2<f32>(uv.x * 1.3, uv.y * 1.8) + vec2<f32>(u.time * 0.022, u.time * 0.014));
+    let wisp_b = fbm(vec2<f32>(uv.x * 0.55, uv.y * 0.72) + vec2<f32>(u.time * 0.010, -u.time * 0.007));
+    let wisp = mix(wisp_a, wisp_b, 0.48);
+    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.62, 1.28, wisp), 0.0, 1.0);
     let fog_col = mix(mix(look, stops.horizon, 0.45), vec3<f32>(luma3(stops.horizon)), mix(0.04, 0.16, day));
     col = mix(col, fog_col, fog_amt);
     col += (hash21(in.pos.xy) - 0.5) * 0.004;
