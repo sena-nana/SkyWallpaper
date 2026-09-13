@@ -24,6 +24,8 @@ const COLS: f32 = 12.0;
 const Y_STRETCH: f32 = 12.0;
 const SLOTS: i32 = 3;
 const PANE_END: f32 = 1.18;
+const LOOKBACK: i32 = 3;
+const CAND_MAX: i32 = 60;
 
 struct Drop {
     valid: f32,
@@ -85,16 +87,6 @@ fn pane_x(uv_x: f32, aspect: f32) -> f32 {
     return (uv_x - 0.5) * aspect;
 }
 
-fn slot_need(slot: i32) -> f32 {
-    if (slot <= 0) {
-        return 0.0;
-    }
-    if (slot == 1) {
-        return 0.30;
-    }
-    return 0.58;
-}
-
 fn cycle_len_of(col: i32, slot: i32) -> f32 {
     return mix(8.0, 13.0, hash21(vec2<f32>(f32(col) * 0.11 + 2.3, f32(slot) * 5.9)));
 }
@@ -153,6 +145,14 @@ fn same_drop(a: Drop, b: Drop) -> bool {
     return a.col == b.col && a.slot == b.slot && a.cycle == b.cycle;
 }
 
+fn r_cap(r0: f32) -> f32 {
+    return max(r0 * 2.15, 0.52);
+}
+
+fn r_hit(d: Drop, t: f32) -> f32 {
+    return min(max(r_now(d, t), 1e-4), r_cap(d.r0));
+}
+
 fn lane_close(a: Drop, b: Drop) -> bool {
     return abs(a.x0 - b.x0) <= (a.r0 + b.r0) / COLS + 0.85 / COLS;
 }
@@ -163,20 +163,21 @@ fn catch_in(a: Drop, b: Drop, t0: f32, t1: f32) -> f32 {
     }
     let ya = y_at(a, t0);
     let yb = y_at(b, t0);
-    let ry = (a.r0 + b.r0) / Y_STRETCH + 0.03;
-    if (abs(ya - yb) <= ry) {
+    let ry = (r_hit(a, t0) + r_hit(b, t0)) / Y_STRETCH + 0.03;
+    let gap = abs(yb - ya);
+    if (gap <= ry) {
         return t0;
     }
     let va = vel_at(a, t0);
     let vb = vel_at(b, t0);
     if (ya < yb && va > vb + 1e-5) {
-        let tm = t0 + (yb - ya) / (va - vb);
-        if (tm <= t1) {
+        let tm = t0 + (gap - ry) / (va - vb);
+        if (tm >= t0 && tm <= t1) {
             return tm;
         }
     } else if (yb < ya && vb > va + 1e-5) {
-        let tm = t0 + (ya - yb) / (vb - va);
-        if (tm <= t1) {
+        let tm = t0 + (gap - ry) / (vb - va);
+        if (tm >= t0 && tm <= t1) {
             return tm;
         }
     }
@@ -206,7 +207,7 @@ fn meet_t(a: Drop, b: Drop, t: f32) -> f32 {
     return hit;
 }
 
-fn drop_at(col: i32, slot: i32, cycle: i32, t: f32, rain: f32) -> Drop {
+fn drop_at(col: i32, slot: i32, cycle: i32, t: f32) -> Drop {
     var d: Drop;
     d.valid = 0.0;
     d.col = f32(col);
@@ -221,15 +222,21 @@ fn drop_at(col: i32, slot: i32, cycle: i32, t: f32, rain: f32) -> Drop {
     d.t_spawn = 0.0;
     d.t_fall = 0.0;
     d.t_end = 0.0;
-    if (cycle < 0 || rain < slot_need(slot)) {
+    if (cycle < 0) {
+        return d;
+    }
+    let rnd = hash22(vec2<f32>(f32(col) * 3.1 + f32(cycle) * 17.0, f32(slot) * 8.3 + f32(cycle) * 4.7));
+    let rndz = hash21(vec2<f32>(f32(col + slot * 19), f32(cycle) * 9.1 + 2.4));
+    if (slot == 1 && rndz > 0.82) {
+        return d;
+    }
+    if (slot >= 2 && rndz > 0.52) {
         return d;
     }
     let L = cycle_len_of(col, slot);
     let ph = phase_of(col, slot);
     let t_spawn = (f32(cycle) - ph) * L;
-    let rnd = hash22(vec2<f32>(f32(col) * 3.1 + f32(cycle) * 17.0, f32(slot) * 8.3 + f32(cycle) * 4.7));
-    let rndz = hash21(vec2<f32>(f32(col + slot * 19), f32(cycle) * 9.1 + 2.4));
-    let mode_b = rnd.y < mix(0.22, 0.72, rain);
+    let mode_b = rnd.y < select(0.42, 0.62, slot == 0);
     let u_off = mix(0.78, 0.90, rndz);
     d.x0 = (f32(col) + 0.5 + (rnd.x - 0.5) * 0.55) / COLS;
     d.amp = (0.5 - abs(rnd.x - 0.5)) * (rndz - 0.5) * 0.3 / COLS;
@@ -254,51 +261,91 @@ fn drop_at(col: i32, slot: i32, cycle: i32, t: f32, rain: f32) -> Drop {
     return d;
 }
 
-fn eat_info(me: Drop, t: f32, rain: f32) -> vec2<f32> {
-    var swallowed = 0.0;
-    var extra = 0.0;
-    let col = i32(me.col);
+fn drops(uv: vec2<f32>, aspect: f32, t: f32) -> vec2<f32> {
+    let px = pane_x(uv.x, aspect);
+    let col0 = i32(floor(px * COLS));
+    var cand: array<Drop, 60>;
+    var n = 0;
     for (var dc = -2; dc <= 2; dc = dc + 1) {
         for (var slot = 0; slot < SLOTS; slot = slot + 1) {
-            let oc = current_cycle(col + dc, slot, t);
-            for (var g = 0; g <= 1; g = g + 1) {
-                let other = drop_at(col + dc, slot, oc - g, t, rain);
-                if (other.valid < 0.5 || same_drop(me, other)) {
+            let oc = current_cycle(col0 + dc, slot, t);
+            for (var g = 0; g <= LOOKBACK; g = g + 1) {
+                let d = drop_at(col0 + dc, slot, oc - g, t);
+                if (d.valid < 0.5 || n >= CAND_MAX) {
                     continue;
                 }
-                let tm = meet_t(me, other, t);
-                if (tm < 0.0) {
-                    continue;
-                }
-                if (drop_wins(other, me)) {
-                    swallowed = 1.0;
-                } else if (drop_wins(me, other)) {
-                    extra += other.r0 * other.r0 * smoothstep(tm, tm + 0.28, t);
-                }
+                cand[n] = d;
+                n = n + 1;
             }
         }
     }
-    return vec2<f32>(swallowed, extra);
-}
+    for (var i = 1; i < CAND_MAX; i = i + 1) {
+        if (i >= n) {
+            break;
+        }
+        var k = i;
+        loop {
+            if (k <= 0 || !drop_wins(cand[k], cand[k - 1])) {
+                break;
+            }
+            let tmp = cand[k];
+            cand[k] = cand[k - 1];
+            cand[k - 1] = tmp;
+            k = k - 1;
+        }
+    }
+    var eater: array<i32, 60>;
+    var eaten_at: array<f32, 60>;
+    for (var i = 0; i < CAND_MAX; i = i + 1) {
+        eater[i] = -1;
+        eaten_at[i] = -1.0;
+        if (i >= n) {
+            continue;
+        }
+        for (var j = 0; j < i; j = j + 1) {
+            let tm = meet_t(cand[j], cand[i], t);
+            if (tm < 0.0) {
+                continue;
+            }
+            if (eater[j] >= 0 && eaten_at[j] <= tm) {
+                continue;
+            }
+            if (eater[i] < 0 || tm < eaten_at[i]) {
+                eater[i] = j;
+                eaten_at[i] = tm;
+            }
+        }
+    }
 
-fn drops(uv: vec2<f32>, aspect: f32, t: f32, rain: f32) -> vec2<f32> {
-    let px = pane_x(uv.x, aspect);
-    let col0 = i32(floor(px * COLS));
     var m = 0.0;
     var trail = 0.0;
     for (var dc = -1; dc <= 1; dc = dc + 1) {
         for (var slot = 0; slot < SLOTS; slot = slot + 1) {
             let cyc = current_cycle(col0 + dc, slot, t);
-            let d = drop_at(col0 + dc, slot, cyc, t, rain);
+            let d = drop_at(col0 + dc, slot, cyc, t);
             if (d.valid < 0.5 || t < d.t_spawn || t >= d.t_end) {
                 continue;
             }
-            let eat = eat_info(d, t, rain);
-            if (eat.x > 0.5) {
+            var me_i = -1;
+            for (var i = 0; i < CAND_MAX; i = i + 1) {
+                if (i < n && same_drop(cand[i], d)) {
+                    me_i = i;
+                }
+            }
+            if (me_i < 0 || eater[me_i] >= 0) {
                 continue;
             }
+            var extra = 0.0;
+            for (var i = 0; i < CAND_MAX; i = i + 1) {
+                if (i < n && eater[i] == me_i) {
+                    extra += cand[i].r0 * cand[i].r0 * smoothstep(eaten_at[i], eaten_at[i] + 0.28, t);
+                }
+            }
             let r_base = r_now(d, t);
-            let r = min(sqrt(max(r_base * r_base + eat.y, 0.0)), max(d.r0 * 2.15, 0.52));
+            let r = min(sqrt(max(r_base * r_base + extra, 0.0)), r_cap(d.r0));
+            if (r < 1e-4) {
+                continue;
+            }
             let x = drop_x(d, d.y);
             let fall_k = clamp((d.y - d.y_spawn) / max(PANE_END - d.y_spawn, 0.08), 0.0, 1.0);
             let egg = sd_egg(vec2<f32>((px - x) * COLS, (d.y - uv.y) * Y_STRETCH), mix(0.0, -0.2, fall_k));
@@ -350,7 +397,7 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
-    let field = drops(uv, aspect, u.time, rain);
+    let field = drops(uv, aspect, u.time);
     let n = vec2<f32>(dpdx(field.x), dpdy(field.x));
     let warped = uv + n;
     let sharp = sky_sample(warped);
