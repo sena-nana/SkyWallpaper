@@ -20,6 +20,27 @@ struct Uniforms {
 @group(0) @binding(1) var sky_tex: texture_2d<f32>;
 @group(0) @binding(2) var sky_samp: sampler;
 
+const COLS: f32 = 12.0;
+const Y_STRETCH: f32 = 12.0;
+const SLOTS: i32 = 3;
+const PANE_END: f32 = 1.18;
+
+struct Drop {
+    valid: f32,
+    col: f32,
+    slot: f32,
+    cycle: f32,
+    x0: f32,
+    amp: f32,
+    y: f32,
+    y_spawn: f32,
+    r0: f32,
+    v: f32,
+    t_spawn: f32,
+    t_fall: f32,
+    t_end: f32,
+};
+
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
     var p = array<vec2<f32>, 3>(
@@ -45,10 +66,6 @@ fn noise2(p: vec2<f32>) -> f32 {
     );
 }
 
-fn saw01(b: f32, t: f32) -> f32 {
-    return smoothstep(0.0, b, t) * smoothstep(1.0, b, t);
-}
-
 fn sd_egg(p: vec2<f32>, rb: f32) -> f32 {
     let k = sqrt(3.0);
     let q = vec2<f32>(abs(p.x), p.y);
@@ -64,78 +81,240 @@ fn sd_egg(p: vec2<f32>, rb: f32) -> f32 {
     return d - rb;
 }
 
-fn static_drops(uv: vec2<f32>, t: f32, amount: f32) -> f32 {
-    if (amount <= 0.0) {
-        return 0.0;
-    }
-    let p = uv * 40.0;
-    let origin = floor(p);
-    var acc = 0.0;
-    for (var jy = -1; jy <= 1; jy = jy + 1) {
-        for (var ix = -1; ix <= 1; ix = ix + 1) {
-            let cell = origin + vec2<f32>(f32(ix), f32(jy));
-            let rnd = hash22(cell);
-            let fade = saw01(0.10, fract(t + rnd.y));
-            let center = (rnd - 0.5) * 0.6;
-            let q = p - cell - 0.5;
-            let drop = smoothstep(0.3, 0.0, length(q - center));
-            acc += drop * fade * fract(rnd.x * 27.0) * amount;
-        }
-    }
-    return acc;
+fn pane_x(uv_x: f32, aspect: f32) -> f32 {
+    return (uv_x - 0.5) * aspect;
 }
 
-fn drop_layer(uv: vec2<f32>, t: f32) -> vec2<f32> {
-    let gx = uv.x * 12.0;
-    let origin_c = floor(gx);
-    var m = 0.0;
-    var trail = 0.0;
-    for (var ix = -1; ix <= 1; ix = ix + 1) {
-        let col = origin_c + f32(ix);
-        let grid_fall = hash21(vec2<f32>(col, 0.17)) * 0.333 + 0.5;
-        var qy = uv.y - t * grid_fall;
-        qy += hash21(vec2<f32>(col, 1.31));
-        let gy = qy * 2.0;
-        let nrow0 = floor(gy);
-        for (var jy = -1; jy <= 1; jy = jy + 1) {
-            let nrow = nrow0 + f32(jy);
-            let rnd = hash22(vec2<f32>(col, nrow));
-            let rndz = hash21(vec2<f32>(col + 3.1, nrow + 8.7));
-            let st = vec2<f32>(gx - col - 0.5, gy - nrow);
-            var x = rnd.x - 0.5;
-            let wiggle = sin(qy * 20.0 + sin(qy * 20.0));
-            x += wiggle * (0.5 - abs(x)) * (rndz - 0.5) * 0.3;
-            x *= 0.6;
-            let ti = fract(t * (grid_fall + 0.1) + rndz);
-            let d = sd_egg(vec2<f32>(st.x - x, (ti - st.y) * 6.0), mix(0.0, -0.2, ti));
-            let diameter = fract(rnd.x + rnd.y) / 7.0 + 0.2;
-            m = max(m, smoothstep(diameter / 1.5, 0.0, d));
-            let r2 = smoothstep(0.0, max(ti, 1e-3), st.y);
-            let gate = r2 * smoothstep(ti + 0.05, ti - 0.05, st.y);
-            if (gate > 0.0) {
-                let width = diameter * 0.75 * sqrt(max(r2, 1e-5));
-                trail = max(trail, smoothstep(width, 0.0, abs(st.x - x)) * gate * 0.5);
+fn slot_need(slot: i32) -> f32 {
+    if (slot <= 0) {
+        return 0.0;
+    }
+    if (slot == 1) {
+        return 0.30;
+    }
+    return 0.58;
+}
+
+fn cycle_len_of(col: i32, slot: i32) -> f32 {
+    return mix(8.0, 13.0, hash21(vec2<f32>(f32(col) * 0.11 + 2.3, f32(slot) * 5.9)));
+}
+
+fn phase_of(col: i32, slot: i32) -> f32 {
+    return hash21(vec2<f32>(f32(col) + 0.7, f32(slot) * 11.3));
+}
+
+fn current_cycle(col: i32, slot: i32, t: f32) -> i32 {
+    return i32(floor(t / cycle_len_of(col, slot) + phase_of(col, slot)));
+}
+
+fn drop_x(d: Drop, y: f32) -> f32 {
+    let w = sin(y * 20.0 + sin(y * 20.0));
+    return d.x0 + w * d.amp;
+}
+
+fn y_at(d: Drop, t: f32) -> f32 {
+    if (t < d.t_fall) {
+        return d.y_spawn;
+    }
+    return d.y_spawn + d.v * (t - d.t_fall);
+}
+
+fn vel_at(d: Drop, t: f32) -> f32 {
+    if (t < d.t_fall) {
+        return 0.0;
+    }
+    return d.v;
+}
+
+fn r_now(d: Drop, t: f32) -> f32 {
+    if (d.t_fall > d.t_spawn + 1e-4 && t < d.t_fall) {
+        return d.r0 * smoothstep(d.t_spawn, d.t_fall, t);
+    }
+    return d.r0;
+}
+
+fn drop_wins(a: Drop, b: Drop) -> bool {
+    if (a.r0 > b.r0 + 1e-6) {
+        return true;
+    }
+    if (b.r0 > a.r0 + 1e-6) {
+        return false;
+    }
+    if (a.col != b.col) {
+        return a.col < b.col;
+    }
+    if (a.slot != b.slot) {
+        return a.slot < b.slot;
+    }
+    return a.cycle < b.cycle;
+}
+
+fn same_drop(a: Drop, b: Drop) -> bool {
+    return a.col == b.col && a.slot == b.slot && a.cycle == b.cycle;
+}
+
+fn lane_close(a: Drop, b: Drop) -> bool {
+    return abs(a.x0 - b.x0) <= (a.r0 + b.r0) / COLS + 0.85 / COLS;
+}
+
+fn catch_in(a: Drop, b: Drop, t0: f32, t1: f32) -> f32 {
+    if (t1 <= t0 + 1e-4) {
+        return -1.0;
+    }
+    let ya = y_at(a, t0);
+    let yb = y_at(b, t0);
+    let ry = (a.r0 + b.r0) / Y_STRETCH + 0.03;
+    if (abs(ya - yb) <= ry) {
+        return t0;
+    }
+    let va = vel_at(a, t0);
+    let vb = vel_at(b, t0);
+    if (ya < yb && va > vb + 1e-5) {
+        let tm = t0 + (yb - ya) / (va - vb);
+        if (tm <= t1) {
+            return tm;
+        }
+    } else if (yb < ya && vb > va + 1e-5) {
+        let tm = t0 + (ya - yb) / (vb - va);
+        if (tm <= t1) {
+            return tm;
+        }
+    }
+    return -1.0;
+}
+
+fn meet_t(a: Drop, b: Drop, t: f32) -> f32 {
+    let t_lo = max(a.t_spawn, b.t_spawn);
+    let t_hi = min(min(a.t_end, b.t_end), t);
+    if (t_lo >= t_hi || !lane_close(a, b)) {
+        return -1.0;
+    }
+    var t1 = clamp(a.t_fall, t_lo, t_hi);
+    var t2 = clamp(b.t_fall, t_lo, t_hi);
+    if (t1 > t2) {
+        let s = t1;
+        t1 = t2;
+        t2 = s;
+    }
+    var hit = catch_in(a, b, t_lo, t1);
+    if (hit < 0.0) {
+        hit = catch_in(a, b, t1, t2);
+    }
+    if (hit < 0.0) {
+        hit = catch_in(a, b, t2, t_hi);
+    }
+    return hit;
+}
+
+fn drop_at(col: i32, slot: i32, cycle: i32, t: f32, rain: f32) -> Drop {
+    var d: Drop;
+    d.valid = 0.0;
+    d.col = f32(col);
+    d.slot = f32(slot);
+    d.cycle = f32(cycle);
+    d.x0 = 0.0;
+    d.amp = 0.0;
+    d.y = 0.0;
+    d.y_spawn = 0.0;
+    d.r0 = 0.0;
+    d.v = 0.0;
+    d.t_spawn = 0.0;
+    d.t_fall = 0.0;
+    d.t_end = 0.0;
+    if (cycle < 0 || rain < slot_need(slot)) {
+        return d;
+    }
+    let L = cycle_len_of(col, slot);
+    let ph = phase_of(col, slot);
+    let t_spawn = (f32(cycle) - ph) * L;
+    let rnd = hash22(vec2<f32>(f32(col) * 3.1 + f32(cycle) * 17.0, f32(slot) * 8.3 + f32(cycle) * 4.7));
+    let rndz = hash21(vec2<f32>(f32(col + slot * 19), f32(cycle) * 9.1 + 2.4));
+    let mode_b = rnd.y < mix(0.22, 0.72, rain);
+    let u_off = mix(0.78, 0.90, rndz);
+    d.x0 = (f32(col) + 0.5 + (rnd.x - 0.5) * 0.55) / COLS;
+    d.amp = (0.5 - abs(rnd.x - 0.5)) * (rndz - 0.5) * 0.3 / COLS;
+    d.r0 = mix(0.16, 0.34, fract(rnd.x + rnd.y * 3.7));
+    d.t_spawn = t_spawn;
+    if (mode_b) {
+        d.y_spawn = -0.07;
+        d.t_fall = t_spawn;
+        let dur = max(u_off * L, 0.2);
+        d.v = (PANE_END - d.y_spawn) / dur;
+        d.t_end = t_spawn + dur;
+    } else {
+        let u_grow = mix(0.10, 0.22, fract(rndz * 5.1));
+        d.y_spawn = mix(0.04, 0.62, fract(rnd.y + rndz));
+        d.t_fall = t_spawn + u_grow * L;
+        let dur = max((u_off - u_grow) * L, 0.2);
+        d.v = (PANE_END - d.y_spawn) / dur;
+        d.t_end = d.t_fall + dur;
+    }
+    d.y = y_at(d, t);
+    d.valid = 1.0;
+    return d;
+}
+
+fn eat_info(me: Drop, t: f32, rain: f32) -> vec2<f32> {
+    var swallowed = 0.0;
+    var extra = 0.0;
+    let col = i32(me.col);
+    for (var dc = -2; dc <= 2; dc = dc + 1) {
+        for (var slot = 0; slot < SLOTS; slot = slot + 1) {
+            let oc = current_cycle(col + dc, slot, t);
+            for (var g = 0; g <= 1; g = g + 1) {
+                let other = drop_at(col + dc, slot, oc - g, t, rain);
+                if (other.valid < 0.5 || same_drop(me, other)) {
+                    continue;
+                }
+                let tm = meet_t(me, other, t);
+                if (tm < 0.0) {
+                    continue;
+                }
+                if (drop_wins(other, me)) {
+                    swallowed = 1.0;
+                } else if (drop_wins(me, other)) {
+                    extra += other.r0 * other.r0 * smoothstep(tm, tm + 0.28, t);
+                }
             }
         }
     }
-    return vec2<f32>(m, trail);
+    return vec2<f32>(swallowed, extra);
 }
 
-fn drops(uv: vec2<f32>, t: f32, rain: f32) -> vec2<f32> {
-    let static_amt = smoothstep(-0.5, 1.0, rain) * 2.0;
-    let layer1 = smoothstep(0.25, 0.75, rain);
-    let layer2 = smoothstep(0.0, 0.5, rain);
-    let s = static_drops(uv, t, static_amt);
-    var m1 = vec2<f32>(0.0);
-    var m2 = vec2<f32>(0.0);
-    if (layer1 > 0.0) {
-        m1 = drop_layer(uv, t) * layer1;
+fn drops(uv: vec2<f32>, aspect: f32, t: f32, rain: f32) -> vec2<f32> {
+    let px = pane_x(uv.x, aspect);
+    let col0 = i32(floor(px * COLS));
+    var m = 0.0;
+    var trail = 0.0;
+    for (var dc = -1; dc <= 1; dc = dc + 1) {
+        for (var slot = 0; slot < SLOTS; slot = slot + 1) {
+            let cyc = current_cycle(col0 + dc, slot, t);
+            let d = drop_at(col0 + dc, slot, cyc, t, rain);
+            if (d.valid < 0.5 || t < d.t_spawn || t >= d.t_end) {
+                continue;
+            }
+            let eat = eat_info(d, t, rain);
+            if (eat.x > 0.5) {
+                continue;
+            }
+            let r_base = r_now(d, t);
+            let r = min(sqrt(max(r_base * r_base + eat.y, 0.0)), max(d.r0 * 2.15, 0.52));
+            let x = drop_x(d, d.y);
+            let fall_k = clamp((d.y - d.y_spawn) / max(PANE_END - d.y_spawn, 0.08), 0.0, 1.0);
+            let egg = sd_egg(vec2<f32>((px - x) * COLS, (d.y - uv.y) * Y_STRETCH), mix(0.0, -0.2, fall_k));
+            m = max(m, smoothstep(r / 1.5, 0.0, egg));
+            if (d.y > d.y_spawn + 0.012) {
+                let tail = max(d.y_spawn, 0.0);
+                let gate = smoothstep(tail - 0.02, tail + 0.02, uv.y) * smoothstep(d.y + 0.02, d.y - 0.02, uv.y);
+                if (gate > 0.0) {
+                    let prog = smoothstep(tail, d.y, uv.y);
+                    let width = r * 0.75 * sqrt(max(prog, 1e-5)) / COLS;
+                    trail = max(trail, smoothstep(width, 0.0, abs(px - x)) * gate * 0.5);
+                }
+            }
+        }
     }
-    if (layer2 > 0.0) {
-        m2 = drop_layer(uv * 1.85, t) * layer2;
-    }
-    let c = smoothstep(0.3, 1.0, s + m1.x + m2.x);
-    return vec2<f32>(c, m1.y + m2.y);
+    return vec2<f32>(smoothstep(0.3, 1.0, m), trail);
 }
 
 fn sky_texel(uv: vec2<f32>) -> vec3<f32> {
@@ -171,9 +350,7 @@ fn fs_main(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
-    let auv = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
-    let t = u.time * 0.2;
-    let field = drops(auv, t, rain);
+    let field = drops(uv, aspect, u.time, rain);
     let n = vec2<f32>(dpdx(field.x), dpdy(field.x));
     let warped = uv + n;
     let sharp = sky_sample(warped);
