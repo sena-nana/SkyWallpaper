@@ -47,19 +47,12 @@ fn noise2(p: vec2<f32>) -> f32 {
     );
 }
 
-fn path(yy: f32, rnd: vec2<f32>) -> vec2<f32> {
+fn path_x(yy: f32, rnd: vec2<f32>) -> f32 {
     let x0 = (rnd.x - 0.5) * 0.50;
     let inner = yy * 0.55 + rnd.x;
     let arg = yy * 0.85 + rnd.y * 0.8 + sin(inner);
     let amp = mix(0.05, 0.14, rnd.y) * (0.55 + 0.70 * (0.5 - abs(x0)));
-    return vec2<f32>(0.5 + x0 + sin(arg) * amp, cos(arg) * (0.85 + 0.55 * cos(inner)) * amp);
-}
-
-fn sm(e0: f32, e1: f32, v: f32) -> vec2<f32> {
-    let d = e1 - e0;
-    let den = select(d, 1e-5, abs(d) < 1e-5);
-    let t = clamp((v - e0) / den, 0.0, 1.0);
-    return vec2<f32>(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / den);
+    return 0.5 + x0 + sin(arg) * amp;
 }
 
 fn bump(x: f32, vis: f32, r: f32) -> vec2<f32> {
@@ -146,24 +139,20 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
             let st_x = gx - col;
             let st_y = gy - nrow;
             let path0 = uv.y * 7.0 + hash21(vec2<f32>(col + 3.1, nrow + 8.7));
-            let px = path(path0 + y, rnd);
             let mass = mix(0.88, 1.18, rnd.x);
             f = smax3(f, lens_grad(
-                vec2<f32>((st_x - px.x) * sx, (st_y - y) * sy),
+                vec2<f32>((st_x - path_x(path0 + y, rnd)) * sx, (st_y - y) * sy),
                 mix(0.016, 0.034, rnd.y) * mass,
                 vis,
             ));
-            let span = max(y, 1e-3);
-            let dist_raw = st_y / span;
-            let r_env = sqrt(clamp(dist_raw, 0.0, 1.0));
-            let cap = sm(-0.03, 0.05, st_y);
-            let head = sm(y + 0.06, y - 0.03, st_y);
-            let trail_vis = cap.x * head.x * vis;
+            let r_env = sqrt(clamp(st_y / max(y, 1e-3), 0.0, 1.0));
+            let trail_vis = vis
+                * smoothstep(-0.03, 0.05, st_y)
+                * smoothstep(y + 0.06, y - 0.03, st_y);
             if (trail_vis > 0.0) {
                 let rad = mix(0.08, 0.13, rnd.x) * sx * mass * mix(0.22, 1.0, r_env);
-                let cd = abs((st_x - path(path0 + st_y, rnd).x) * sx);
-                let envelope = smoothstep(max(rad, 1e-4), 0.0, cd);
-                wet = max(wet, trail_vis * envelope * mix(0.50, 1.0, r_env));
+                let cd = abs((st_x - path_x(path0 + st_y, rnd)) * sx);
+                wet = max(wet, trail_vis * smoothstep(max(rad, 1e-4), 0.0, cd) * mix(0.50, 1.0, r_env));
             }
             let slot0 = floor(st_y * 8.0);
             for (var kb = -1; kb <= 1; kb = kb + 1) {
@@ -179,7 +168,7 @@ fn drop_layer(uv: vec2<f32>, aspect: f32, t: f32, cols: f32, rows: f32) -> vec4<
                     continue;
                 }
                 f = smax3(f, lens_grad(
-                    vec2<f32>((st_x - path(path0 + by, rnd).x) * sx, (st_y - by) * sy),
+                    vec2<f32>((st_x - path_x(path0 + by, rnd)) * sx, (st_y - by) * sy),
                     mix(0.004, 0.012, br.y) * mass,
                     vis * passed * mix(0.40, 0.90, br.y) * smoothstep(0.16, 0.52, sprinkle),
                 ));
