@@ -768,9 +768,9 @@ mod tests {
         let snow = rain_wx(73, 0.85, PrecipKind::Snow);
         let mist = rain_wx(51, 0.015, PrecipKind::Rain);
         let drizzle_glass = rain_frame(&device, &queue, drizzle, Frame::Auto);
-        let drizzle_blit = rain_frame(&device, &queue, drizzle, Frame::QuarterBlit);
-        let storm_glass = rain_frame(&device, &queue, storm, Frame::Auto);
-        let storm_blit = rain_frame(&device, &queue, storm, Frame::QuarterBlit);
+        let drizzle_blit = rain_frame(&device, &queue, drizzle, Frame::Glass(0.0));
+        let drizzle_on_storm = rain_frame(&device, &queue, storm, Frame::Glass(0.22));
+        let storm_on_storm = rain_frame(&device, &queue, storm, Frame::Glass(0.85));
         let snow_auto = rain_frame(&device, &queue, snow, Frame::Auto);
         let snow_sky = rain_frame(&device, &queue, snow, Frame::SkyOnly);
         let fair_auto = rain_frame(&device, &queue, fair, Frame::Auto);
@@ -778,17 +778,17 @@ mod tests {
         let mist_auto = rain_frame(&device, &queue, mist, Frame::Auto);
         let mist_sky = rain_frame(&device, &queue, mist, Frame::SkyOnly);
         let overlay = frac_changed(&drizzle_glass, &drizzle_blit);
-        let storm_overlay = frac_changed(&storm_glass, &storm_blit);
+        let storm_vs_drizzle = mean_abs_diff(&storm_on_storm, &drizzle_on_storm);
         let snow_skip = mean_abs_diff(&snow_auto, &snow_sky);
         let dry_skip = mean_abs_diff(&fair_auto, &fair_sky);
         let mist_skip = mean_abs_diff(&mist_auto, &mist_sky);
         assert!(
             overlay > 0.003,
-            "glass overlay should change a rain frame vs quarter blit {overlay:.4}"
+            "glass overlay should change a rain frame vs blit {overlay:.4}"
         );
         assert!(
-            storm_overlay > overlay,
-            "storm overlay should cover more pixels than drizzle {storm_overlay:.4} vs {overlay:.4}"
+            storm_vs_drizzle > 0.002,
+            "storm glass should differ from drizzle on the same sky {storm_vs_drizzle:.4}"
         );
         assert!(
             snow_skip < 0.0005,
@@ -802,6 +802,65 @@ mod tests {
             mist_skip < 0.0005,
             "rain below overlay min should stay native-res {mist_skip:.4}"
         );
+    }
+
+    #[test]
+    fn snow_flakes_change_the_frame() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let snow = SkyWeather {
+            code: WeatherCode(73),
+            cloud_cover: 0.0,
+            precip: 0.85,
+            precip_kind: PrecipKind::Snow,
+            fog: 0.0,
+            thunder: false,
+        };
+        let a = pixels(
+            &device,
+            &queue,
+            38.0,
+            0.5,
+            snow,
+            1.0,
+            160,
+            90,
+            Frame::SkyOnly,
+        );
+        let b = pixels(
+            &device,
+            &queue,
+            38.0,
+            0.5,
+            snow,
+            4.5,
+            160,
+            90,
+            Frame::SkyOnly,
+        );
+        let d = frac_changed(&a, &b);
+        assert!(d > 0.004, "snow flakes should move between times {d:.4}");
+    }
+
+    #[test]
+    fn fog_covers_horizon_more_than_zenith() {
+        let (device, queue) = gpu().expect("GPU adapter required for sky look tests");
+        let clear = SkyWeather {
+            fog: 0.0,
+            ..SkyWeather::clear_fallback()
+        };
+        let foggy = SkyWeather {
+            fog: 0.75,
+            ..SkyWeather::clear_fallback()
+        };
+        let a = sample(&device, &queue, 38.0, 0.5, clear);
+        let b = sample(&device, &queue, 38.0, 0.5, foggy);
+        let dz = rgb_dist(a.zenith, b.zenith);
+        let dh = rgb_dist(a.horizon, b.horizon);
+        assert!(
+            dh > dz + 0.01,
+            "fog should hit horizon more than zenith dh={dh:.4} dz={dz:.4}"
+        );
+        assert!(dh > 0.02, "fog should visibly change the horizon {dh:.4}");
     }
 
     #[test]
@@ -1082,7 +1141,7 @@ mod tests {
     enum Frame {
         Auto,
         SkyOnly,
-        QuarterBlit,
+        Glass(f32),
     }
 
     fn pixels(
@@ -1145,10 +1204,10 @@ mod tests {
         match frame {
             Frame::SkyOnly => renderer.draw_sky_only(&mut encoder, &tex),
             Frame::Auto => renderer.draw(device, &mut encoder, &tex, w, h),
-            Frame::QuarterBlit => {
+            Frame::Glass(p) => {
                 renderer.draw_sky_offscreen(device, &mut encoder, w, h);
                 queue.submit(Some(encoder.finish()));
-                uniforms.precip = 0.0;
+                uniforms.precip = p;
                 renderer.write_uniforms(queue, &uniforms);
                 encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 renderer.draw_glass(&mut encoder, &tex);

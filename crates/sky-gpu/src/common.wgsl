@@ -13,5 +13,7 @@ fn view_dir(s: f32) -> vec3<f32> {
 }
 
 fn sky_fog_amt(uv: vec2<f32>, fog: f32) -> f32 {
-    return fog * (1.0 - view_dir(1.0 - uv.y).y * 0.7);
+    let toward_horizon = 1.0 - view_dir(1.0 - uv.y).y;
+    let height = pow(clamp(toward_horizon * 0.72 + 0.16, 0.0, 1.0), 1.35);
+    return fog * height;
 }

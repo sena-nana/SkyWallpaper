@@ -416,18 +416,24 @@ fn snow(uv: vec2<f32>) -> f32 {
     if (amt <= 0.0) {
         return 0.0;
     }
-    let t = u.time * 0.35;
+    let aspect = u.resolution.x / max(u.resolution.y, 1.0);
+    let st = vec2<f32>(uv.x * aspect, uv.y);
     var acc = 0.0;
     for (var i = 0; i < 3; i = i + 1) {
         let fi = f32(i);
-        let st = uv * (18.0 + fi * 9.0) + vec2<f32>(fi * 5.1, -t * (0.8 + fi * 0.4));
-        let id = floor(st);
-        let f = fract(st);
-        let h = hash21(id + fi * 3.0);
-        let d = length(f - vec2<f32>(fract(h * 7.1), fract(h * 3.3)));
-        acc += smoothstep(0.06, 0.0, d);
+        let near = 1.0 - fi / 2.0;
+        var p = st * (10.0 + fi * 10.0) + vec2<f32>(fi * 4.7, 0.0);
+        p.y -= u.time * mix(0.16, 0.46, near);
+        p.x += sin(p.y * 0.32 + u.time * (0.35 + fi * 0.12) + fi) * mix(0.22, 0.38, near);
+        let rnd = hash22(floor(p) + vec2<f32>(fi * 5.3, 1.9));
+        var q = fract(p) - 0.5 - (rnd - 0.5) * 0.34;
+        q *= vec2<f32>(1.18, 0.82);
+        let rad = mix(0.05, 0.14, rnd.y) * mix(0.45, 1.0, near);
+        let vis = step(rnd.x, mix(0.16, 0.70, amt)) * mix(0.35, 1.0, near);
+        let x = clamp(1.0 - length(q) / max(rad, 1e-4), 0.0, 1.0);
+        acc += x * x * vis;
     }
-    return acc * amt;
+    return clamp(acc, 0.0, 1.5) * mix(0.55, 1.0, amt);
 }
 
 @vertex
@@ -487,7 +493,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let flake = tinted(look, stops, 0.12 + 0.45 * day);
     col += flake * snow(uv) * 0.85;
 
-    let fog_amt = sky_fog_amt(uv, u.fog);
+    let wisp = fbm(vec2<f32>(uv.x * 1.6, uv.y * 2.2) + vec2<f32>(u.time * 0.012, u.time * 0.007));
+    let fog_amt = clamp(sky_fog_amt(uv, u.fog) * mix(0.72, 1.22, wisp), 0.0, 1.0);
     let fog_col = mix(mix(look, stops.horizon, 0.4), vec3<f32>(luma3(look)), 0.16)
         * mix(0.92, 1.06, day);
     col = mix(col, fog_col, fog_amt);
