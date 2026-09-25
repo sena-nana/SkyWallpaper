@@ -10,6 +10,8 @@ Windows 动态壁纸：天色随本地时间变化，天气来自 Open-Meteo。
 cargo run --release
 ```
 
+`cargo run --release` 是默认产品启动命令；开发构建可使用 `cargo run`。
+
 设置窗口用 NanaUI；壁纸层是独立 WGPU，画在桌面图标下面的 WorkerW。托盘可打开设置、暂停、退出。
 
 ## 开发预览
@@ -29,14 +31,18 @@ cargo preview --weather rain --lat 39.9 --lon 116.4
 cargo debug
 ```
 
-预览窗 + 滑块面板。时间、季节、天气可调；关掉预览即结束。
+`cargo debug` 使用开发构建，在普通预览窗打开滑块面板；时间、季节、天气可调，关掉预览即结束。
+
+## 性能基准
 
 雨玻璃性能基准会测试 drizzle / light / storm 在 1080p 和 4K 下的 CPU
 提交等待时间，并在适配器支持 timestamp query 时记录 GPU 时间：
 
 ```bash
-cargo run -p sky-gpu --release --bin rain_perf
+cargo perf
 ```
+
+`cargo perf` 使用 release 构建运行 `sky-gpu` 的 `rain_perf`，不会启动桌面壁纸。
 
 CSV 中的 `cpu_wait_*` 包含编码、提交及等待 GPU 完成的时间；`gpu_*` 是命令编码器
 首尾 timestamp 的设备执行时间。不支持 timestamp query 时，GPU 列为 `NaN`。

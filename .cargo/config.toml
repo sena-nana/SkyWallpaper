@@ -1,3 +1,4 @@
 [alias]
 debug = "run -- --debug"
 preview = "run -- --preview"
+perf = "run -p sky-gpu --release --bin rain_perf"

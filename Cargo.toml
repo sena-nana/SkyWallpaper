@@ -6,6 +6,7 @@ members = [
     "crates/wallpaper-host",
     "crates/skywallpaper",
 ]
+default-members = ["crates/skywallpaper"]
 resolver = "2"
 
 [workspace.package]
