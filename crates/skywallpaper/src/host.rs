@@ -28,10 +28,9 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             Err(err) => {
                 state.set_status(format!("WorkerW: {err}; retrying"));
                 eprintln!("wallpaper host failed: {err}; retrying in 2s");
-                if pump_messages() || state.shutdown.load(Ordering::SeqCst) {
+                if wait_for_attach_retry(&state) {
                     return Ok(());
                 }
-                std::thread::sleep(ATTACH_RETRY_INTERVAL);
             }
         }
     };
@@ -231,6 +230,20 @@ fn handle_tray(state: &Arc<AppState>, tray: &Tray) {
             state.request_shutdown();
         }
     }
+}
+
+fn wait_for_attach_retry(state: &AppState) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < ATTACH_RETRY_INTERVAL {
+        if state.shutdown.load(Ordering::SeqCst) || pump_messages() {
+            return true;
+        }
+
+        // Keep the retry delay interruptible and message-pumping while Explorer recreates WorkerW.
+        std::thread::sleep(WAIT_SLICE);
+    }
+
+    state.shutdown.load(Ordering::SeqCst) || pump_messages()
 }
 
 fn pump_messages() -> bool {
