@@ -13,6 +13,7 @@ cargo run --release
 `cargo run --release` 是默认产品启动命令；开发构建可使用 `cargo run`。
 
 设置窗口用 NanaUI；壁纸层是独立 WGPU，画在桌面图标下面的 WorkerW。托盘可打开设置、暂停、退出。
+正常启动不会打开普通预览窗口；如果 Explorer 的 WorkerW 暂时不可用，程序会在后台重试，宿主恢复后自动显示壁纸。
 
 ## 开发预览
 

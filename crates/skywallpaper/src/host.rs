@@ -19,22 +19,20 @@ const HEALTH_INTERVAL: Duration = Duration::from_millis(500);
 const WEATHER_INTERVAL: Duration = Duration::from_secs(20 * 60);
 const PAUSED_SLEEP: Duration = Duration::from_millis(200);
 const WAIT_SLICE: Duration = Duration::from_millis(16);
+const ATTACH_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
-    let mut engine = match WallpaperEngine::attach() {
-        Ok(engine) => engine,
-        Err(err) => {
-            state.set_status(format!("WorkerW: {err}"));
-            eprintln!("wallpaper host failed: {err}");
-            eprintln!("falling back to --preview window");
-            let cfg = state.config.lock().unwrap().clone();
-            return crate::preview::run(crate::preview::PreviewOpts {
-                latitude: cfg.latitude,
-                longitude: cfg.longitude,
-                weather: state.effective_weather(),
-                debug_path: None,
-                debug_panel: None,
-            });
+    let mut engine = loop {
+        match WallpaperEngine::attach() {
+            Ok(engine) => break engine,
+            Err(err) => {
+                state.set_status(format!("WorkerW: {err}; retrying"));
+                eprintln!("wallpaper host failed: {err}; retrying in 2s");
+                if pump_messages() || state.shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                std::thread::sleep(ATTACH_RETRY_INTERVAL);
+            }
         }
     };
 

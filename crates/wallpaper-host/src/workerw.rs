@@ -1,18 +1,18 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW,
-    FindWindowW, GetWindowRect, HWND_BOTTOM, IsWindow, RegisterClassW, SMTO_NORMAL, SWP_NOACTIVATE,
-    SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED, WNDCLASSW,
-    WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, FindWindowW, GetWindowRect,
+    IsWindow, RegisterClassW, SendMessageTimeoutW, SetWindowPos, CS_HREDRAW, CS_VREDRAW,
+    HWND_BOTTOM, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOZORDER, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
-use windows::core::w;
 
 pub static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 
@@ -72,35 +72,48 @@ fn send_progman_spawn(progman: HWND, wparam: usize, lparam: isize) {
 }
 
 fn find_worker_w(progman: HWND) -> Option<HWND> {
-    unsafe {
-        let mut found = HWND::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
-            Some(enum_worker_w),
-            LPARAM(&mut found as *mut HWND as isize),
-        );
-        if !found.is_invalid() {
-            return Some(found);
-        }
-        hwnd_ok(FindWindowExW(Some(progman), None, w!("WorkerW"), None))
+    let mut workers = Vec::new();
+    let mut after = HWND::default();
+    loop {
+        let next = next_worker(None, after);
+        let Some(hwnd) = next else { break };
+        workers.push(hwnd);
+        after = hwnd;
     }
+
+    if let Some(index) = workers.iter().position(|hwnd| has_shell_view(*hwnd)) {
+        for hwnd in workers.iter().skip(index + 1) {
+            if !has_shell_view(*hwnd) {
+                return Some(*hwnd);
+            }
+        }
+    }
+
+    let mut child_after = HWND::default();
+    loop {
+        let next = next_worker(Some(progman), child_after);
+        let Some(hwnd) = next else { break };
+        if !has_shell_view(hwnd) {
+            return Some(hwnd);
+        }
+        child_after = hwnd;
+    }
+    None
 }
 
-unsafe extern "system" fn enum_worker_w(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+fn next_worker(parent: Option<HWND>, after: HWND) -> Option<HWND> {
+    unsafe { hwnd_ok(FindWindowExW(parent, Some(after), w!("WorkerW"), None)) }
+}
+
+fn has_shell_view(hwnd: HWND) -> bool {
     unsafe {
-        if hwnd_ok(FindWindowExW(
+        hwnd_ok(FindWindowExW(
             Some(hwnd),
             None,
             w!("SHELLDLL_DefView"),
             None,
         ))
         .is_some()
-        {
-            if let Some(next) = hwnd_ok(FindWindowExW(None, Some(hwnd), w!("WorkerW"), None)) {
-                let slot = lparam.0 as *mut HWND;
-                *slot = next;
-            }
-        }
-        windows::core::BOOL(1)
     }
 }
 
