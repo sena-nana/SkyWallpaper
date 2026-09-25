@@ -7,7 +7,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ApplicationState, ApplicationWindow, ButtonKind, RuntimeApplication, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, run_runtime,
+    RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
 use weather::{lookup_ip, search_places};
@@ -60,7 +60,7 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     *SETTINGS_STATE.lock().unwrap() = Some(state.clone());
     let title = state.text().settings;
     let result = run_runtime::<RuntimeApplication<Settings>>(
-        RuntimeWindowSettings::new(title)
+        WindowDescriptor::new(title)
             .initial_size(480.0, 640.0)
             .minimum_size(360.0, 400.0),
     );
@@ -146,7 +146,7 @@ impl ApplicationState for Settings {
                 let about = ui.child("about", Text::new(tx.about));
 
                 ui.on(query, move |_, event: &TextChanged, cx| {
-                    cx.dispatch_program(Message::Query(event.value.clone()));
+                    cx.dispatch_program(Message::Query(event.value.to_string()));
                 });
                 ui.on(search, move |_, _: &Activate, cx| {
                     cx.dispatch_program(Message::Search);

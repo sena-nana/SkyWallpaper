@@ -12,7 +12,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ApplicationState, ApplicationWindow, ButtonKind, RuntimeApplication, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, run_runtime,
+    RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
 use serde::{Deserialize, Serialize};
@@ -263,7 +263,7 @@ pub fn run(params: Arc<Mutex<DebugParams>>, persist: Option<PathBuf>) -> anyhow:
     *LAUNCH.lock().unwrap() = Some(Launch { params, persist });
     let title = panel_title();
     let result = run_runtime::<RuntimeApplication<DebugPanel>>(
-        RuntimeWindowSettings::new(title)
+        WindowDescriptor::new(title)
             .initial_size(480.0, 640.0)
             .minimum_size(360.0, 480.0),
     );
