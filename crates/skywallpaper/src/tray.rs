@@ -113,15 +113,10 @@ pub fn open_settings(state: Arc<AppState>) {
     {
         return;
     }
-    std::thread::Builder::new()
-        .name("skywallpaper-settings".into())
-        .spawn(move || {
-            if let Err(err) = crate::settings::run(state.clone()) {
-                state.set_status(err.to_string());
-            }
-            state
-                .settings_open
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-        })
-        .ok();
+    if let Err(err) = crate::settings::run(state.clone()) {
+        state.set_status(err.to_string());
+    }
+    state
+        .settings_open
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 }
