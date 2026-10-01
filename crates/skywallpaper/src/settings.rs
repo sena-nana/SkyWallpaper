@@ -10,7 +10,7 @@ use nana_ui::{
     RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
-use weather::{lookup_ip, search_places};
+use weather::{GeoPlace, lookup_ip, search_places};
 
 use crate::autostart;
 use crate::config::{LanguagePref, LocationMode};
@@ -22,7 +22,15 @@ static SETTINGS_STATE: Mutex<Option<Arc<AppState>>> = Mutex::new(None);
 enum Message {
     Query(String),
     Search,
+    SearchFinished {
+        request_id: u64,
+        result: Result<Vec<GeoPlace>, String>,
+    },
     UseIp,
+    IpFinished {
+        request_id: u64,
+        result: Result<GeoPlace, String>,
+    },
     Lang(LanguagePref),
     Autostart(bool),
     PauseFullscreen(bool),
@@ -53,6 +61,8 @@ struct Widgets {
 struct Settings {
     state: Arc<AppState>,
     query: String,
+    next_request_id: u64,
+    active_request_id: Option<u64>,
     widgets: Option<Widgets>,
 }
 
@@ -80,6 +90,8 @@ impl ApplicationState for Settings {
             .expect("settings state");
         Ok(Self {
             query: String::new(),
+            next_request_id: 0,
+            active_request_id: None,
             state,
             widgets: None,
         })
@@ -208,8 +220,20 @@ impl ApplicationState for Settings {
         match message {
             Message::Query(value) => self.query = value,
             Message::Search => {
+                let request_id = self.start_request();
                 let lang = self.state.lang().code();
-                match search_places(&self.query, lang) {
+                let query = self.query.clone();
+                let context = context.clone();
+                std::thread::spawn(move || {
+                    let result = search_places(&query, lang).map_err(|err| err.to_string());
+                    context.dispatch(Message::SearchFinished { request_id, result });
+                });
+            }
+            Message::SearchFinished { request_id, result } => {
+                if !self.is_current_request(request_id) {
+                    return RuntimeProgramUpdate::default();
+                }
+                match result {
                     Ok(hits) if !hits.is_empty() => {
                         let hit = &hits[0];
                         self.state.update_location(
@@ -223,18 +247,31 @@ impl ApplicationState for Settings {
                     Ok(_) | Err(_) => self.state.set_status("…"),
                 }
             }
-            Message::UseIp => match lookup_ip() {
-                Ok(place) => {
-                    self.state.update_location(
-                        place.latitude,
-                        place.longitude,
-                        place.label.clone(),
-                        LocationMode::Ip,
-                    );
-                    self.state.set_status(place.label);
+            Message::UseIp => {
+                let request_id = self.start_request();
+                let context = context.clone();
+                std::thread::spawn(move || {
+                    let result = lookup_ip().map_err(|err| err.to_string());
+                    context.dispatch(Message::IpFinished { request_id, result });
+                });
+            }
+            Message::IpFinished { request_id, result } => {
+                if !self.is_current_request(request_id) {
+                    return RuntimeProgramUpdate::default();
                 }
-                Err(err) => self.state.set_status(err.to_string()),
-            },
+                match result {
+                    Ok(place) => {
+                        self.state.update_location(
+                            place.latitude,
+                            place.longitude,
+                            place.label.clone(),
+                            LocationMode::Ip,
+                        );
+                        self.state.set_status(place.label);
+                    }
+                    Err(err) => self.state.set_status(err),
+                }
+            }
             Message::Lang(pref) => self.state.set_language(pref),
             Message::Autostart(on) => {
                 let mut cfg = self.state.config.lock().unwrap();
@@ -262,6 +299,17 @@ impl ApplicationState for Settings {
 }
 
 impl Settings {
+    fn start_request(&mut self) -> u64 {
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.active_request_id = Some(self.next_request_id);
+        self.state.set_status("…");
+        self.next_request_id
+    }
+
+    fn is_current_request(&self, request_id: u64) -> bool {
+        request_is_current(self.active_request_id, request_id)
+    }
+
     fn sync_widgets(&mut self, window: &mut ApplicationWindow) {
         let Some(w) = self.widgets else {
             return;
@@ -313,5 +361,21 @@ impl Settings {
             };
         });
         let _ = cx.update_component(w.about, |t, _| t.value = tx.about.to_string());
+    }
+}
+
+fn request_is_current(active_request_id: Option<u64>, request_id: u64) -> bool {
+    active_request_id == Some(request_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_is_current;
+
+    #[test]
+    fn only_active_request_can_apply_result() {
+        assert!(request_is_current(Some(7), 7));
+        assert!(!request_is_current(Some(8), 7));
+        assert!(!request_is_current(None, 7));
     }
 }
