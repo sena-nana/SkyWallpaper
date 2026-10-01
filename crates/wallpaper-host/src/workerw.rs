@@ -1,18 +1,18 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, FindWindowW, GetWindowRect,
-    IsWindow, RegisterClassW, SendMessageTimeoutW, SetWindowPos, CS_HREDRAW, CS_VREDRAW,
-    HWND_BOTTOM, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOZORDER, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW,
+    GetShellWindow, GetWindowRect, HWND_BOTTOM, IsWindow, RegisterClassW, SMTO_NORMAL,
+    SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
+use windows::core::w;
 
 pub static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 
@@ -41,19 +41,33 @@ fn hwnd_ok(result: windows::core::Result<HWND>) -> Option<HWND> {
 }
 
 pub fn spawn_worker_w() -> Result<HWND, WorkerWError> {
-    let progman =
-        hwnd_ok(unsafe { FindWindowW(w!("Progman"), None) }).ok_or(WorkerWError::NoProgman)?;
+    // GetShellWindow is reliable on current Windows 11 builds. FindWindowW
+    // can miss this shell-owned Progman even while it owns SHELLDLL_DefView.
+    let progman = unsafe { GetShellWindow() };
+    if progman.is_invalid() {
+        return Err(WorkerWError::NoProgman);
+    }
     if let Some(hwnd) = find_worker_w(progman) {
+        eprintln!(
+            "wallpaper host: using existing WorkerW {:#x}",
+            hwnd.0 as usize
+        );
         return Ok(hwnd);
     }
     // 0x052C is undocumented; it can toggle WorkerW on some builds, so only
     // send it when the window is missing, and try Win10 then Win11 payloads.
     send_progman_spawn(progman, 0, 0);
     if let Some(hwnd) = find_worker_w(progman) {
+        eprintln!("wallpaper host: spawned WorkerW {:#x}", hwnd.0 as usize);
         return Ok(hwnd);
     }
     send_progman_spawn(progman, 0xD, 0x1);
-    find_worker_w(progman).ok_or(WorkerWError::NoWorkerW)
+    let hwnd = find_worker_w(progman).ok_or(WorkerWError::NoWorkerW)?;
+    eprintln!(
+        "wallpaper host: spawned WorkerW with Win11 payload {:#x}",
+        hwnd.0 as usize
+    );
+    Ok(hwnd)
 }
 
 fn send_progman_spawn(progman: HWND, wparam: usize, lparam: isize) {
@@ -72,6 +86,33 @@ fn send_progman_spawn(progman: HWND, wparam: usize, lparam: isize) {
 }
 
 fn find_worker_w(progman: HWND) -> Option<HWND> {
+    // The normal desktop layout has SHELLDLL_DefView directly under Progman.
+    // The wallpaper host belongs in the next top-level WorkerW after Progman.
+    if shell_view(progman).is_some() {
+        // Some current builds create the wallpaper host as a child of
+        // Progman, so prefer that exact sibling of SHELLDLL_DefView.
+        let mut child_after = HWND::default();
+        loop {
+            let next = next_worker(Some(progman), child_after);
+            let Some(hwnd) = next else { break };
+            if !has_shell_view(hwnd) {
+                return Some(hwnd);
+            }
+            child_after = hwnd;
+        }
+
+        let mut after = progman;
+        loop {
+            let next = next_worker(None, after)?;
+            if !has_shell_view(next) {
+                return Some(next);
+            }
+            after = next;
+        }
+    }
+
+    // Some Explorer builds move SHELLDLL_DefView into a WorkerW. Retain the
+    // canonical "next WorkerW" lookup as a fallback for that layout.
     let mut workers = Vec::new();
     let mut after = HWND::default();
     loop {
@@ -106,6 +147,10 @@ fn next_worker(parent: Option<HWND>, after: HWND) -> Option<HWND> {
 }
 
 fn has_shell_view(hwnd: HWND) -> bool {
+    shell_view(hwnd).is_some()
+}
+
+fn shell_view(hwnd: HWND) -> Option<HWND> {
     unsafe {
         hwnd_ok(FindWindowExW(
             Some(hwnd),
@@ -113,7 +158,6 @@ fn has_shell_view(hwnd: HWND) -> bool {
             w!("SHELLDLL_DefView"),
             None,
         ))
-        .is_some()
     }
 }
 

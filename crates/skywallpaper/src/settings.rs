@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
-    Activate, AppTitleBar, Button, Checkbox, Entity, FrameworkError, Text, TextChanged, TextInput,
-    ToggleChanged,
+    Activate, AppTitleBar, Button, Checkbox, Entity, FrameworkError, LengthSpec, ScrollAxes,
+    ScrollView, SettingsCard, SettingsRow, Stack, Text, TextChanged, TextInput, ToggleChanged,
+    view::{button, entity_ref, row, text, text_input, widget},
 };
 use nana_ui::{
     ApplicationState, ApplicationWindow, ButtonKind, RuntimeApplication, RuntimeProgramContext,
     RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
+use nana_ui_core::DisplaySpec;
 use nana_ui_platform::WindowId;
 use weather::{GeoPlace, lookup_ip, search_places};
 
@@ -20,6 +22,7 @@ static SETTINGS_STATE: Mutex<Option<Arc<AppState>>> = Mutex::new(None);
 
 #[derive(Clone)]
 enum Message {
+    Select(Page),
     Query(String),
     Search,
     SearchFinished {
@@ -38,10 +41,22 @@ enum Message {
     RefreshWeather,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    General,
+    Behavior,
+    About,
+}
+
 #[derive(Clone, Copy)]
 struct Widgets {
     title_bar: Entity<AppTitleBar>,
-    location_label: Entity<Text>,
+    nav_general: Entity<Button>,
+    nav_behavior: Entity<Button>,
+    nav_about: Entity<Button>,
+    general_page: Entity<Stack>,
+    behavior_page: Entity<Stack>,
+    about_page: Entity<Stack>,
     query: Entity<TextInput>,
     search: Entity<Button>,
     ip: Entity<Button>,
@@ -64,6 +79,7 @@ struct Settings {
     next_request_id: u64,
     active_request_id: Option<u64>,
     widgets: Option<Widgets>,
+    page: Page,
 }
 
 pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
@@ -71,8 +87,8 @@ pub fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let title = state.text().settings;
     let result = run_runtime::<RuntimeApplication<Settings>>(
         WindowDescriptor::new(title)
-            .initial_size(480.0, 640.0)
-            .minimum_size(360.0, 400.0),
+            .initial_size(640.0, 720.0)
+            .minimum_size(480.0, 520.0),
     );
     *SETTINGS_STATE.lock().unwrap() = None;
     result.map_err(|err| anyhow::anyhow!("{err}"))
@@ -94,6 +110,7 @@ impl ApplicationState for Settings {
             active_request_id: None,
             state,
             widgets: None,
+            page: Page::General,
         })
     }
 
@@ -106,108 +123,199 @@ impl ApplicationState for Settings {
         let cfg = self.state.config.lock().unwrap().clone();
         let paused = self.state.is_paused();
         let status = self.state.status.lock().unwrap().clone();
-        self.widgets = Some(crate::shell::mount_app_shell(
-            window,
-            tx.settings,
-            |ui, title_bar| {
-                let location_label = ui.child("loc_l", Text::new(tx.location));
-                let query = ui.child(
-                    "query",
-                    TextInput::new("")
+        let (title_bar, widgets) = crate::shell::mount_app_shell(window, tx.settings, || {
+            let nav_general = entity_ref::<Button>();
+            let nav_behavior = entity_ref::<Button>();
+            let nav_about = entity_ref::<Button>();
+            let general_page = entity_ref::<Stack>();
+            let behavior_page = entity_ref::<Stack>();
+            let about_page = entity_ref::<Stack>();
+            let query = entity_ref::<TextInput>();
+            let search = entity_ref::<Button>();
+            let ip = entity_ref::<Button>();
+            let place = entity_ref::<Text>();
+            let lang_label = entity_ref::<Text>();
+            let lang_sys = entity_ref::<Button>();
+            let lang_zh = entity_ref::<Button>();
+            let lang_en = entity_ref::<Button>();
+            let autostart = entity_ref::<Checkbox>();
+            let fullscreen = entity_ref::<Checkbox>();
+            let pause = entity_ref::<Button>();
+            let refresh = entity_ref::<Button>();
+            let status_ref = entity_ref::<Text>();
+            let about = entity_ref::<Text>();
+            let location_controls = widget(SettingsCard::new(tx.location)).children(
+                widget(Stack::column(10.0)).children((
+                    text(tx.location_hint),
+                    text_input()
                         .placeholder(tx.location)
-                        .label(tx.location),
-                );
-                let (search, ip) = ui.row(8.0, |ui| {
-                    let search =
-                        ui.child("search", Button::new(tx.search).kind(ButtonKind::Primary));
-                    let ip = ui.child("ip", Button::new(tx.use_ip));
-                    (search, ip)
-                });
-                let place = ui.child(
-                    "place",
-                    Text::new(format!(
+                        .label(tx.location)
+                        .entity_ref(query)
+                        .on_cx(|_, event: &TextChanged, cx| {
+                            cx.dispatch_program(Message::Query(event.value.to_string()));
+                        }),
+                    row().gap(8.0).children((
+                        widget(Button::new(tx.search).kind(ButtonKind::Primary))
+                            .entity_ref(search)
+                            .on_cx(|_, _: &Activate, cx| cx.dispatch_program(Message::Search)),
+                        button(tx.use_ip)
+                            .entity_ref(ip)
+                            .on_cx(|_, _: &Activate, cx| cx.dispatch_program(Message::UseIp)),
+                    )),
+                    text(format!(
                         "{}  ({:.2}, {:.2})",
                         cfg.label, cfg.latitude, cfg.longitude
+                    ))
+                    .entity_ref(place),
+                )),
+            );
+            let language_controls = widget(SettingsCard::new(tx.language)).children(
+                widget(Stack::column(10.0)).children((
+                    text(tx.language_hint).entity_ref(lang_label),
+                    widget(SettingsRow::new(tx.language)).children(
+                        row().gap(8.0).children((
+                            button(tx.follow_system).entity_ref(lang_sys).on_cx(
+                                |_, _: &Activate, cx| {
+                                    cx.dispatch_program(Message::Lang(LanguagePref::System))
+                                },
+                            ),
+                            button(tx.chinese)
+                                .entity_ref(lang_zh)
+                                .on_cx(|_, _: &Activate, cx| {
+                                    cx.dispatch_program(Message::Lang(LanguagePref::Zh))
+                                }),
+                            button(tx.english)
+                                .entity_ref(lang_en)
+                                .on_cx(|_, _: &Activate, cx| {
+                                    cx.dispatch_program(Message::Lang(LanguagePref::En))
+                                }),
+                        )),
+                    ),
+                )),
+            );
+            let behavior_controls = widget(SettingsCard::new(tx.behavior)).children(
+                widget(Stack::column(8.0)).children((
+                    widget(SettingsRow::new(tx.autostart).hint(tx.runtime_hint)).children(
+                        widget(Checkbox::new(tx.autostart, cfg.autostart))
+                            .entity_ref(autostart)
+                            .on_cx(|_, event: &ToggleChanged, cx| {
+                                cx.dispatch_program(Message::Autostart(event.checked))
+                            }),
+                    ),
+                    widget(SettingsRow::new(tx.pause_fullscreen)).children(
+                        widget(Checkbox::new(tx.pause_fullscreen, cfg.pause_on_fullscreen))
+                            .entity_ref(fullscreen)
+                            .on_cx(|_, event: &ToggleChanged, cx| {
+                                cx.dispatch_program(Message::PauseFullscreen(event.checked))
+                            }),
+                    ),
+                    row().gap(8.0).children((
+                        button(if paused { tx.resume } else { tx.pause })
+                            .entity_ref(pause)
+                            .on_cx(|_, _: &Activate, cx| cx.dispatch_program(Message::TogglePause)),
+                        button(tx.refresh_weather).entity_ref(refresh).on_cx(
+                            |_, _: &Activate, cx| cx.dispatch_program(Message::RefreshWeather),
+                        ),
                     )),
-                );
-                let lang_label = ui.child("lang_l", Text::new(tx.language));
-                let (lang_sys, lang_zh, lang_en) = ui.row(8.0, |ui| {
-                    let lang_sys = ui.child("lang_sys", Button::new(tx.follow_system));
-                    let lang_zh = ui.child("lang_zh", Button::new(tx.chinese));
-                    let lang_en = ui.child("lang_en", Button::new(tx.english));
-                    (lang_sys, lang_zh, lang_en)
-                });
-                let autostart = ui.child("auto", Checkbox::new(tx.autostart, cfg.autostart));
-                let fullscreen = ui.child(
-                    "fs",
-                    Checkbox::new(tx.pause_fullscreen, cfg.pause_on_fullscreen),
-                );
-                let pause = ui.child(
-                    "pause",
-                    Button::new(if paused { tx.resume } else { tx.pause }),
-                );
-                let refresh = ui.child("refresh", Button::new(tx.refresh_weather));
-                let status = ui.child(
-                    "status",
-                    Text::new(if status.is_empty() {
+                    text(if status.is_empty() {
                         tx.running.to_string()
                     } else {
                         status
-                    }),
-                );
-                let about = ui.child("about", Text::new(tx.about));
-
-                ui.on(query, move |_, event: &TextChanged, cx| {
-                    cx.dispatch_program(Message::Query(event.value.to_string()));
-                });
-                ui.on(search, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::Search);
-                });
-                ui.on(ip, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::UseIp);
-                });
-                ui.on(lang_sys, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::Lang(LanguagePref::System));
-                });
-                ui.on(lang_zh, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::Lang(LanguagePref::Zh));
-                });
-                ui.on(lang_en, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::Lang(LanguagePref::En));
-                });
-                ui.on(autostart, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::Autostart(event.checked));
-                });
-                ui.on(fullscreen, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::PauseFullscreen(event.checked));
-                });
-                ui.on(pause, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::TogglePause);
-                });
-                ui.on(refresh, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::RefreshWeather);
-                });
-
-                Widgets {
-                    title_bar,
-                    location_label,
-                    query,
-                    search,
-                    ip,
-                    place,
-                    lang_label,
-                    lang_sys,
-                    lang_zh,
-                    lang_en,
-                    autostart,
-                    fullscreen,
-                    pause,
-                    refresh,
-                    status,
-                    about,
-                }
-            },
-        )?);
+                    })
+                    .entity_ref(status_ref),
+                )),
+            );
+            let about_controls = widget(SettingsCard::new(tx.about_page)).children(
+                widget(Stack::column(8.0))
+                    .children((text(tx.about).entity_ref(about), text(tx.runtime_hint))),
+            );
+            let body = widget(Stack::fill_row(16.0)).children((
+                widget(
+                    Stack::fill_column(8.0)
+                        .width(LengthSpec::Px(160.0))
+                        .shrink(0.0)
+                        .padding(8.0),
+                )
+                .children((
+                    text(tx.settings),
+                    widget(Button::new(tx.general).kind(ButtonKind::Primary))
+                        .entity_ref(nav_general)
+                        .on_cx(|_, _: &Activate, cx| {
+                            cx.dispatch_program(Message::Select(Page::General))
+                        }),
+                    button(tx.behavior)
+                        .entity_ref(nav_behavior)
+                        .on_cx(|_, _: &Activate, cx| {
+                            cx.dispatch_program(Message::Select(Page::Behavior))
+                        }),
+                    button(tx.about_page)
+                        .entity_ref(nav_about)
+                        .on_cx(|_, _: &Activate, cx| {
+                            cx.dispatch_program(Message::Select(Page::About))
+                        }),
+                )),
+                widget(ScrollView::new(ScrollAxes::Vertical).with_layout(|layout| {
+                    layout.flex_grow = Some(1.0);
+                    layout.flex_shrink = Some(1.0);
+                }))
+                .children(
+                    widget(Stack::fill_column(16.0)).children((
+                        widget(Stack::column(16.0))
+                            .entity_ref(general_page)
+                            .children((location_controls, language_controls)),
+                        widget(Stack::column(16.0).with_layout(|layout| {
+                            layout.display = Some(DisplaySpec::None);
+                        }))
+                        .entity_ref(behavior_page)
+                        .children(behavior_controls),
+                        widget(Stack::column(16.0).with_layout(|layout| {
+                            layout.display = Some(DisplaySpec::None);
+                        }))
+                        .entity_ref(about_page)
+                        .children(about_controls),
+                    )),
+                ),
+            ));
+            (
+                body,
+                (
+                    (
+                        nav_general,
+                        nav_behavior,
+                        nav_about,
+                        general_page,
+                        behavior_page,
+                        about_page,
+                        query,
+                    ),
+                    (search, ip, place, lang_label, lang_sys, lang_zh, lang_en),
+                    (autostart, fullscreen, pause, refresh, status_ref, about),
+                ),
+            )
+        })?;
+        self.widgets = Some(Widgets {
+            title_bar,
+            nav_general: widgets.0.0,
+            nav_behavior: widgets.0.1,
+            nav_about: widgets.0.2,
+            general_page: widgets.0.3,
+            behavior_page: widgets.0.4,
+            about_page: widgets.0.5,
+            query: widgets.0.6,
+            search: widgets.1.0,
+            ip: widgets.1.1,
+            place: widgets.1.2,
+            lang_label: widgets.1.3,
+            lang_sys: widgets.1.4,
+            lang_zh: widgets.1.5,
+            lang_en: widgets.1.6,
+            autostart: widgets.2.0,
+            fullscreen: widgets.2.1,
+            pause: widgets.2.2,
+            refresh: widgets.2.3,
+            status: widgets.2.4,
+            about: widgets.2.5,
+        });
         Ok(())
     }
 
@@ -218,6 +326,7 @@ impl ApplicationState for Settings {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         match message {
+            Message::Select(page) => self.page = page,
             Message::Query(value) => self.query = value,
             Message::Search => {
                 let request_id = self.start_request();
@@ -293,6 +402,7 @@ impl ApplicationState for Settings {
         }
         if let Some(window) = windows.get_mut(&context.window_id()) {
             self.sync_widgets(window);
+            self.sync_pages(window);
         }
         RuntimeProgramUpdate::redraw(context.window_id())
     }
@@ -323,7 +433,30 @@ impl Settings {
             bar.title = tx.settings.into();
         });
         let _ = cx.assemble_app_title_bar(w.title_bar);
-        let _ = cx.update_component(w.location_label, |t, _| t.value = tx.location.to_string());
+        let _ = cx.update_component(w.nav_general, |b, _| {
+            b.label = tx.general.to_string();
+            b.kind = if self.page == Page::General {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Ghost
+            };
+        });
+        let _ = cx.update_component(w.nav_behavior, |b, _| {
+            b.label = tx.behavior.to_string();
+            b.kind = if self.page == Page::Behavior {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Ghost
+            };
+        });
+        let _ = cx.update_component(w.nav_about, |b, _| {
+            b.label = tx.about_page.to_string();
+            b.kind = if self.page == Page::About {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Ghost
+            };
+        });
         let _ = cx.update_component(w.query, |input, _| {
             input.placeholder = tx.location.into();
         });
@@ -361,6 +494,24 @@ impl Settings {
             };
         });
         let _ = cx.update_component(w.about, |t, _| t.value = tx.about.to_string());
+    }
+
+    fn sync_pages(&self, window: &mut ApplicationWindow) {
+        let Some(w) = self.widgets else {
+            return;
+        };
+        let cx = window.document.context_mut();
+        for (page, visible) in [
+            (w.general_page, self.page == Page::General),
+            (w.behavior_page, self.page == Page::Behavior),
+            (w.about_page, self.page == Page::About),
+        ] {
+            let _ = cx.update_component(page, |stack, _| {
+                *stack = stack.clone().with_layout(|layout| {
+                    layout.display = (!visible).then_some(DisplaySpec::None);
+                });
+            });
+        }
     }
 }
 

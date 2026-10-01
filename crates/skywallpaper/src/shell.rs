@@ -1,22 +1,31 @@
 use nana_ui::ApplicationWindow;
-use nana_ui::runtime::{AppShell, AppTitleBar, Entity, FrameworkError, Stack, UiBuilder};
+use nana_ui::runtime::{
+    AppShell, AppTitleBar, Entity, FrameworkError, Stack,
+    view::{IntoView, Refs, entity_ref, widget, with_refs},
+};
 
-pub fn mount_app_shell<R>(
+pub fn mount_app_shell<V, R>(
     window: &mut ApplicationWindow,
     title: &str,
-    body: impl FnOnce(&mut UiBuilder<'_>, Entity<AppTitleBar>) -> R,
-) -> Result<R, FrameworkError> {
+    body: impl FnOnce() -> (V, R),
+) -> Result<(Entity<AppTitleBar>, R::Resolved), FrameworkError>
+where
+    V: IntoView,
+    R: Refs,
+{
     let document = window.document.document();
-    let (result, shell) = window.document.context_mut().build(document, |ui| {
-        let shell = ui.child("shell", AppShell::new());
-        let result = ui.nest(shell, |ui| {
-            let title_bar = ui.child("title", AppTitleBar::new(title));
-            ui.with("body", Stack::fill_column(12.0).padding(16.0), |ui| {
-                body(ui, title_bar)
-            })
-        });
-        (result, shell)
-    })?;
-    window.document.context_mut().assemble_app_shell(shell)?;
-    Ok(result)
+    let title = title.to_string();
+    let (_mounted, (title_bar, body_refs)) =
+        window
+            .document
+            .context_mut()
+            .mount_view_root(document, || {
+                let title_ref = entity_ref::<AppTitleBar>();
+                let (body_view, body_refs) = body();
+                let root = widget(AppShell::new())
+                    .title_bar(widget(AppTitleBar::new(title)).entity_ref(title_ref))
+                    .body(widget(Stack::fill_column(12.0).padding(16.0)).children(body_view));
+                with_refs(root, (title_ref, body_refs))
+            })?;
+    Ok((title_bar, body_refs))
 }

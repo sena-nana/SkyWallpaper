@@ -64,13 +64,22 @@ impl WallpaperEngine {
     pub fn attach() -> Result<Self, EngineError> {
         register_surface_class().map_err(EngineError::WorkerW)?;
         let parent = spawn_worker_w().map_err(EngineError::WorkerW)?;
-        let listener = create_listener_window().unwrap_or_default();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let adapter = pollster_adapter(&instance)?;
-        let (device, queue) = pollster_device(&adapter)?;
+        let monitors = list_monitors_relative_to(parent);
+        let monitor = monitors.first().ok_or(EngineError::NoMonitor)?;
+        let hwnd = create_monitor_window(parent, monitor)?;
+        let gpu = (|| {
+            let surface = create_surface(&instance, hwnd)?;
+            let adapter = pollster_adapter(&instance, &surface)?;
+            let (device, queue) = pollster_device(&adapter)?;
+            Ok::<_, EngineError>((adapter, device, queue))
+        })();
+        destroy_hwnd(hwnd);
+        let (adapter, device, queue) = gpu?;
+        let listener = create_listener_window().unwrap_or_default();
         let mut engine = Self {
             instance,
             device,
@@ -162,12 +171,13 @@ impl WallpaperEngine {
         hwnd: HWND,
         monitor: &MonitorRect,
     ) -> Result<SurfaceSlot, EngineError> {
-        let target = WallpaperHwnd { hwnd };
-        let unsafe_target = unsafe { SurfaceTargetUnsafe::from_window(&target) }
-            .map_err(|err| EngineError::Surface(format!("{err:?}")))?;
-        let surface = unsafe { self.instance.create_surface_unsafe(unsafe_target) }
-            .map_err(|err| EngineError::Surface(err.to_string()))?;
+        let surface = create_surface(&self.instance, hwnd)?;
         let caps = surface.get_capabilities(&self.adapter);
+        if caps.formats.is_empty() || caps.alpha_modes.is_empty() {
+            return Err(EngineError::Surface(
+                "adapter cannot present to wallpaper window".into(),
+            ));
+        }
         let format = pick_srgb_format(&caps.formats);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -268,10 +278,24 @@ impl Drop for WallpaperEngine {
     }
 }
 
-fn pollster_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, EngineError> {
+fn create_surface(
+    instance: &wgpu::Instance,
+    hwnd: HWND,
+) -> Result<wgpu::Surface<'static>, EngineError> {
+    let target = WallpaperHwnd { hwnd };
+    let unsafe_target = unsafe { SurfaceTargetUnsafe::from_display_and_window(&target, &target) }
+        .map_err(|err| EngineError::Surface(format!("{err:?}")))?;
+    unsafe { instance.create_surface_unsafe(unsafe_target) }
+        .map_err(|err| EngineError::Surface(err.to_string()))
+}
+
+fn pollster_adapter(
+    instance: &wgpu::Instance,
+    surface: &wgpu::Surface<'_>,
+) -> Result<wgpu::Adapter, EngineError> {
     pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
+        compatible_surface: Some(surface),
         force_fallback_adapter: false,
         apply_limit_buckets: false,
     }))

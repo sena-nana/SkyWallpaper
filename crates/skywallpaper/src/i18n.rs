@@ -58,6 +58,12 @@ pub struct Text {
     pub running: &'static str,
     pub paused: &'static str,
     pub about: &'static str,
+    pub general: &'static str,
+    pub behavior: &'static str,
+    pub about_page: &'static str,
+    pub location_hint: &'static str,
+    pub language_hint: &'static str,
+    pub runtime_hint: &'static str,
 }
 
 pub fn t(lang: Lang) -> Text {
@@ -83,6 +89,12 @@ pub fn t(lang: Lang) -> Text {
             running: "运行中",
             paused: "已暂停",
             about: "天色随本地时间变化。天气来自 Open-Meteo，失败时回退晴天。",
+            general: "常规",
+            behavior: "行为",
+            about_page: "关于",
+            location_hint: "搜索城市，或使用 IP 粗略确定当前位置。",
+            language_hint: "选择设置窗口使用的语言。",
+            runtime_hint: "查看壁纸运行状态并手动刷新天气。",
         },
         Lang::En => Text {
             app: "SkyWallpaper",
@@ -105,6 +117,12 @@ pub fn t(lang: Lang) -> Text {
             running: "Running",
             paused: "Paused",
             about: "Sky color follows local time. Weather from Open-Meteo; failures fall back to clear sky.",
+            general: "General",
+            behavior: "Behavior",
+            about_page: "About",
+            location_hint: "Search for a city, or use an approximate IP location.",
+            language_hint: "Choose the language used by the settings window.",
+            runtime_hint: "View wallpaper status and refresh weather manually.",
         },
     }
 }

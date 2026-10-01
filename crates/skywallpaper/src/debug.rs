@@ -9,6 +9,7 @@ use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use nana_ui::runtime::{
     Activate, Button, Checkbox, Entity, FrameworkError, RangeChanged, RangeField, Text,
     ToggleChanged,
+    view::{button, entity_ref, row, text, widget},
 };
 use nana_ui::{
     ApplicationState, ApplicationWindow, ButtonKind, RuntimeApplication, RuntimeProgramContext,
@@ -293,66 +294,76 @@ impl ApplicationState for DebugPanel {
     ) -> Result<(), Self::Error> {
         let zh = Lang::resolve(LanguagePref::System) == Lang::Zh;
         let p = *self.params.lock().unwrap();
-        self.widgets = Some(crate::shell::mount_app_shell(
-            window,
-            panel_title(),
-            |ui, _| {
-                let summary = ui.child("sum", Text::new(p.summary()));
-                let live = ui.child(
-                    "live",
-                    Checkbox::new(t(zh, "跟随当前时间", "Live clock"), p.live_clock),
+        let (_, widgets) = crate::shell::mount_app_shell(window, panel_title(), || {
+            let summary = entity_ref::<Text>();
+            let live = entity_ref::<Checkbox>();
+            let pause = entity_ref::<Checkbox>();
+            let snow = entity_ref::<Checkbox>();
+            let knob_refs = [
+                entity_ref::<RangeField>(),
+                entity_ref::<RangeField>(),
+                entity_ref::<RangeField>(),
+                entity_ref::<RangeField>(),
+                entity_ref::<RangeField>(),
+                entity_ref::<RangeField>(),
+            ];
+            let reset = entity_ref::<Button>();
+            let mut knob_views = Vec::new();
+            for (knob, knob_ref) in Knob::ALL.into_iter().zip(knob_refs) {
+                let (_, min, max, step, label) = knob.spec(zh);
+                knob_views.push(
+                    widget(slider(p.knob(knob), min, max, step, label))
+                        .entity_ref(knob_ref)
+                        .on_cx(move |_, event: &RangeChanged, cx| {
+                            cx.dispatch_program(Message::Knob(knob, event.value));
+                        }),
                 );
-                let pause = ui.child(
-                    "pause",
-                    Checkbox::new(t(zh, "暂停动画", "Pause anim"), p.anim_paused),
-                );
-                let snow = ui.child("snow", Checkbox::new(t(zh, "雪", "Snow"), p.snow));
-
-                let mut knobs: [Option<Entity<RangeField>>; 6] = [None; 6];
-                for (i, knob) in Knob::ALL.into_iter().enumerate() {
-                    let (id, min, max, step, label) = knob.spec(zh);
-                    let field = ui.child(id, slider(p.knob(knob), min, max, step, label));
-                    ui.on(field, move |_, event: &RangeChanged, cx| {
-                        cx.dispatch_program(Message::Knob(knob, event.value));
-                    });
-                    knobs[i] = Some(field);
+            }
+            let presets = row().gap(8.0).with(|children| {
+                for (name, z, e) in PRESETS {
+                    children.add(button(t(zh, z, e)).on_cx(move |_, _: &Activate, cx| {
+                        cx.dispatch_program(Message::Preset(name));
+                    }));
                 }
-
-                ui.row(8.0, |ui| {
-                    for (name, z, e) in PRESETS {
-                        let btn = ui.child(*name, Button::new(t(zh, z, e)));
-                        ui.on(btn, move |_, _: &Activate, cx| {
-                            cx.dispatch_program(Message::Preset(name));
-                        });
-                    }
-                });
-                let reset = ui.child(
-                    "reset",
-                    Button::new(t(zh, "重置", "Reset")).kind(ButtonKind::Primary),
-                );
-
-                ui.on(live, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::Live(event.checked));
-                });
-                ui.on(pause, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::Pause(event.checked));
-                });
-                ui.on(snow, move |_, event: &ToggleChanged, cx| {
-                    cx.dispatch_program(Message::Snow(event.checked));
-                });
-                ui.on(reset, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(Message::Reset);
-                });
-
-                Widgets {
-                    summary,
-                    knobs: knobs.map(|k| k.expect("knob")),
-                    live,
-                    pause,
-                    snow,
-                }
-            },
-        )?);
+            });
+            let body = widget(nana_ui::runtime::Stack::column(12.0)).children((
+                text(p.summary()).entity_ref(summary),
+                widget(Checkbox::new(
+                    t(zh, "跟随当前时间", "Live clock"),
+                    p.live_clock,
+                ))
+                .entity_ref(live)
+                .on_cx(|_, event: &ToggleChanged, cx| {
+                    cx.dispatch_program(Message::Live(event.checked))
+                }),
+                widget(Checkbox::new(
+                    t(zh, "暂停动画", "Pause anim"),
+                    p.anim_paused,
+                ))
+                .entity_ref(pause)
+                .on_cx(|_, event: &ToggleChanged, cx| {
+                    cx.dispatch_program(Message::Pause(event.checked))
+                }),
+                widget(Checkbox::new(t(zh, "雪", "Snow"), p.snow))
+                    .entity_ref(snow)
+                    .on_cx(|_, event: &ToggleChanged, cx| {
+                        cx.dispatch_program(Message::Snow(event.checked))
+                    }),
+                knob_views,
+                presets,
+                widget(Button::new(t(zh, "重置", "Reset")).kind(ButtonKind::Primary))
+                    .entity_ref(reset)
+                    .on_cx(|_, _: &Activate, cx| cx.dispatch_program(Message::Reset)),
+            ));
+            (body, (summary, knob_refs, live, pause, snow, reset))
+        })?;
+        self.widgets = Some(Widgets {
+            summary: widgets.0,
+            knobs: widgets.1,
+            live: widgets.2,
+            pause: widgets.3,
+            snow: widgets.4,
+        });
         Ok(())
     }
 
